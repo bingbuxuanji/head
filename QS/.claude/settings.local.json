@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python tools/generate_unicode_table.py --output Core/Src/unicode_gb2312_table.inc)",
+      "Bash(python -c \"import serial; print\\('pyserial OK'\\)\")",
+      "Bash(python tools/send_font.py COM3 tools/font_16x16.bin)",
+      "Bash(python tools/send_font.py COM6 tools/font_16x16.bin)",
+      "Bash(python tools/fix_main.py)",
+      "Bash(python *)"
+    ]
+  }
+}
