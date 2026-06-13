@@ -70,4 +70,15 @@ python tests/uart_slave_simulator.py COM3
 | MQTT Broker | Python asyncio (自研) |
 | Android | Kotlin + Jetpack Compose + Paho MQTT |
 | 地图 | 高德 3D Map SDK (原生 GL) |
+| 保活 | Android Foreground Service |
 | 穿透 | frp (内网穿透) |
+
+## Android App 功能
+
+- 实时数据卡片（体温 / 心率 / 速度 / GPS 坐标）
+- 高德 3D 地图 + 蓝点定位 + 轨迹折线 + 自动跟随
+- 告警通知栏推送 + **系统闹铃剧响**（10 秒循环）
+- **前台服务保活**，退到后台不杀进程
+- MQTT 断线自动退避重连（2s→4s→8s→60s）
+- 传感器数据持久化缓存，重启不丢
+- 体温 > 37.5°C / 心率 > 150 BPM 实时告警

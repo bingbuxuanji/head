@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## [0.4.1] — 2026-06-13
+
+### 新增
+
+- **前台服务保活**：`MonitorService` 前台服务，通知栏常驻，App 退到后台不杀进程
+- **告警剧响**：收到告警 → 音量拉最大 → 系统闹铃循环播放 10 秒
+- **断线自动重连**：Paho 自带重连换协程退避重连（2s→4s→8s→最大 60s）
+- **数据持久化**：SharedPreferences 缓存最新传感器数据，杀进程重启不丢
+- **串口模拟器告警命令**：`a` / `a1`（体温） / `a2`（心率） / `a3`（双重）
+- **串口模拟器 GPS 终点驻留**：到达终点后坐标不变，继续定时发送
+- **App 启动图标**：自适应分辨率 launcher icon
+
+### 修复
+
+- **告警阈值修正**：体温上限 42°C → 37.5°C，心率上限 180 → 150 BPM
+- **MCP HTTP 阻塞修复**：`get_bicycle_route` 和 `start_navigation` 的 HTTP 请求移至后台线程
+- **MQTT 属性合并**：`publish_attributes` 不再清空缓存，GPS + 传感器合并上报
+- **通知权限兜底**：权限未就绪时用 Toast 代替静默丢失
+
+### 变更
+
+- `MqttManager` 支持多 clientId 后缀，UI 和 Service 使用独立 MQTT 连接
+- `MapViewComposable` 改用原生 `MapView`（FrameLayout + OpenGL），废弃 WebView 方案
+
 ## [0.4.0] — 2026-06-13
 
 ### 新增
