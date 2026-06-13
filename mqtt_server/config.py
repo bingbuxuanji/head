@@ -19,9 +19,9 @@ DATA_LOG_ENABLED = True
 DATA_LOG_DIR = os.environ.get("MQTT_DATA_LOG_DIR", "./data_logs")
 
 ALERT_THRESHOLDS = {
-    "temperature": {"min": 34.0, "max": 42.0},
-    "heart_rate":  {"min": 40,    "max": 180},
-    "velocity":    {"max": 25.0},
+    "temperature": {"min": 35.0, "max": 37.5},
+    "heart_rate":  {"min": 40,   "max": 150},
+    "velocity":    {"max": 20.0},
 }
 
 DATA_PIPELINE = [

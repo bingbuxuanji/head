@@ -40,11 +40,12 @@ class Notifier(private val context: Context) {
     }
 
     fun show(alert: AlertItem) {
-        // Android 13+ 需要运行时权限
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
-                return  // 权限未授予，静默跳过
+                // 权限未就绪时用 Toast 兜底，不静默丢失
+                android.widget.Toast.makeText(context, "⚠ ${alert.msg}", android.widget.Toast.LENGTH_LONG).show()
+                return
             }
         }
 

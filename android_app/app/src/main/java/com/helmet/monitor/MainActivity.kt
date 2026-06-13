@@ -1,6 +1,7 @@
 package com.helmet.monitor
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -22,7 +23,7 @@ import com.helmet.monitor.ui.DashboardScreen
  */
 class MainActivity : ComponentActivity() {
 
-    private val mqtt by lazy { MqttManager() }
+    private val mqtt by lazy { MqttManager(this) }
     private val notifier by lazy { Notifier(this) }
 
     // Android 13+ 通知权限请求
@@ -37,7 +38,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 请求通知权限（Android 13+）
+        // 启动后台保活 + 告警 Service
+        startService(Intent(this, MonitorService::class.java))
+
         requestNotificationPermission()
 
         // 启动 Compose UI

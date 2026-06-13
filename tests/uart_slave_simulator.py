@@ -45,21 +45,52 @@ except ImportError:
 
 
 # ============================================================================
-# 模拟 GPS 轨迹数据（北京中关村 → 颐和园，约 12 个路径点）
+# GPS 轨迹（郫都区团结 → 金牛区 → 青羊区天府广场）
 # ============================================================================
 DEFAULT_GPS_ROUTE = [
-    (39.9825, 116.3054),   # 中关村
-    (39.9842, 116.3038),
-    (39.9868, 116.3018),
-    (39.9895, 116.2995),
-    (39.9923, 116.2972),
-    (39.9950, 116.2950),
-    (39.9972, 116.2934),
-    (39.9991, 116.2918),
-    (40.0008, 116.2900),
-    (40.0020, 116.2880),
-    (40.0025, 116.2850),
-    (40.0028, 116.2820),  # 颐和园附近
+    (30.818529, 103.985887),  # 起点 郫都区团结镇
+    (30.817000, 103.986500),
+    (30.815100, 103.986900),
+    (30.813500, 103.987200),
+    (30.811800, 103.988800),
+    (30.809500, 103.990100),
+    (30.808000, 103.991500),
+    (30.806200, 103.994000),  # 蜀源大道
+    (30.803800, 103.997000),
+    (30.800800, 103.999800),
+    (30.797500, 104.002000),
+    (30.794000, 104.003800),
+    (30.790000, 104.005000),  # 交大路
+    (30.786000, 104.006500),
+    (30.782000, 104.008500),
+    (30.778000, 104.010500),
+    (30.774000, 104.013000),
+    (30.769500, 104.015500),  # 沙湾路
+    (30.765000, 104.018500),
+    (30.760500, 104.021500),
+    (30.756000, 104.025000),
+    (30.751500, 104.028000),
+    (30.747000, 104.031000),
+    (30.742500, 104.034000),
+    (30.738000, 104.037000),
+    (30.733500, 104.039500),
+    (30.729000, 104.042500),
+    (30.724500, 104.045500),
+    (30.720000, 104.048500),
+    (30.715000, 104.051000),
+    (30.710000, 104.053500),
+    (30.705500, 104.056000),
+    (30.701000, 104.058500),
+    (30.697000, 104.060500),
+    (30.693000, 104.062500),
+    (30.689000, 104.064000),
+    (30.684000, 104.065000),
+    (30.680000, 104.065800),
+    (30.675000, 104.066000),
+    (30.670000, 104.065900),
+    (30.665500, 104.065800),
+    (30.661000, 104.065800),
+    (30.657401, 104.065861),  # 终点 天府广场
 ]
 
 
@@ -96,8 +127,8 @@ class UartSlaveSimulator:
         self.gps_thread = None
         self.gps_stop_event = threading.Event()
 
-        # 传感器模拟（温度/心率/速度 —— 每次上报随机生成）
-        self.auto_sensor_enabled = False
+        # 传感器模拟（默认开启，定时上报温度/心率/速度）
+        self.auto_sensor_enabled = True
         self.sensor_thread = None
         self.sensor_stop_event = threading.Event()
 
@@ -133,18 +164,18 @@ class UartSlaveSimulator:
 
     # ---------- GPS 模拟 ----------
     def _advance_route(self):
-        """沿预设轨迹前进一个点（循环）"""
-        self.route_index = (self.route_index + 1) % len(self.route)
-        self.current_lat, self.current_lng = self.route[self.route_index]
+        """沿预设轨迹前进一个点，到达终点后停止"""
+        if self.route_index < len(self.route) - 1:
+            self.route_index += 1
+            self.current_lat, self.current_lng = self.route[self.route_index]
 
     def _gps_auto_reply_worker(self):
-        """后台线程：每隔 2 秒模拟一次 GPS 轨迹移动"""
+        """后台线程：每隔 2 秒模拟一次 GPS 轨迹移动，到达终点后停在原地继续发送"""
         while not self.gps_stop_event.is_set():
             self._advance_route()
             gps_str = f"g{self.current_lat:.6f},{self.current_lng:.6f}"
             self._send_raw(gps_str.encode('utf-8'))
             print(f"  {Color.CYAN}[GPS] → {gps_str}{Color.RESET}")
-            # 等待 2 秒或直到收到停止信号
             self.gps_stop_event.wait(timeout=2.0)
 
     def start_auto_gps(self):
@@ -185,9 +216,30 @@ class UartSlaveSimulator:
     def send_sensor(self):
         """手动发送一次传感器数据（随机值）"""
         temp, hr, vel = self._gen_sensor_data()
+        self._send_sensor_raw(temp, hr, vel)
+
+    def send_alert(self, alert_type=0):
+        """发送告警传感器数据
+        alert_type: 1=体温告警  2=心率告警  3=双重告警  0=随机告警
+        """
+        if alert_type == 0:
+            alert_type = random.randint(1, 3)
+        if alert_type == 1:
+            temp, hr = round(random.uniform(38.5, 41.0), 1), random.randint(70, 100)
+            tag = "体温告警"
+        elif alert_type == 2:
+            temp, hr = round(random.uniform(36.1, 37.2), 1), random.randint(160, 200)
+            tag = "心率告警"
+        else:
+            temp, hr = round(random.uniform(38.5, 41.0), 1), random.randint(160, 200)
+            tag = "双重告警"
+        vel = round(random.uniform(0.5, 12.0), 1)
+        self._send_sensor_raw(temp, hr, vel)
+        print(f"  {Color.RED}[ALERT {tag}] → s{temp},{hr},{vel}{Color.RESET}")
+
+    def _send_sensor_raw(self, temp, hr, vel):
         data = f"s{temp},{hr},{vel}".encode('utf-8')
         self._send_raw(data)
-        print(f"  {Color.CYAN}[SENSOR] → s{temp},{hr},{vel}{Color.RESET}")
 
     def _sensor_auto_worker(self):
         """后台线程：每隔 5 秒上报一次随机传感器数据"""
@@ -394,6 +446,13 @@ def handle_keyboard(sim: UartSlaveSimulator, line: str) -> bool:
         sim.send_sensor()
         return True
 
+    if line == 'a':
+        sim.send_alert(0)          # 随机告警类型
+        return True
+    if line in ('a1', 'a2', 'a3'):
+        sim.send_alert(int(line[1]))
+        return True
+
     if line == 'd':
         if sim.auto_sensor_enabled:
             sim.stop_auto_sensor()
@@ -426,6 +485,8 @@ def handle_keyboard(sim: UartSlaveSimulator, line: str) -> bool:
 def main_loop(sim: UartSlaveSimulator):
     """主循环：串口轮询 + 键盘输入"""
     print_banner(sim)
+    sim.start_auto_gps()     # 默认开启 GPS 轨迹模拟
+    sim.start_auto_sensor()  # 默认开启传感器定时上报
 
     # 使用线程读键盘输入，避免 input() 阻塞串口轮询
     input_queue = []

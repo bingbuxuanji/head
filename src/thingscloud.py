@@ -221,8 +221,6 @@ class ThingsCloudMQTT(object):
             self._client.publish(self._topic_attr, payload.encode('utf-8'))
             logger.debug("Attributes published to {}: {}".format(
                 self._topic_attr, data_dict))
-            # 发布成功后清空内部缓存（避免重复上报相同数据）
-            self._attr_values.clear()
             return 0
         except Exception as e:
             logger.error("Publish attributes error: {}".format(e))

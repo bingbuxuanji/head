@@ -725,140 +725,91 @@ class Application(object):
                 arguments = data_dict['payload']["params"]["arguments"]["name"]
                 print("name:", self.audio_manager.new_name(arguments))
             elif handle == "get_bicycle_route":
+                # HTTP 请求甩到后台线程，避免阻塞 WebSocket 接收线程
                 origin_raw = data_dict['payload']["params"]["arguments"]["origin"]
                 destination_raw = data_dict['payload']["params"]["arguments"]["destination"]
-
-                if ',' in origin_raw:
-                    origin = origin_raw
-                else:
-                    addr_info = self.amap.get_addr_coding(origin_raw)
-                    if 'error' in addr_info:
-                        summary = "起点地址解析失败：" + addr_info['error']
-                        self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args=summary)
-                        return
-                    origin = "{},{}".format(addr_info['longitude'], addr_info['latitude'])
-
-                # 终点转换
-                if ',' in destination_raw:
-                    destination = destination_raw
-                else:
-                    addr_info = self.amap.get_addr_coding(destination_raw)
-                    if 'error' in addr_info:
-                        summary = "终点地址解析失败：" + addr_info['error']
-                        self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args=summary)
-                        return
-                    destination = "{},{}".format(addr_info['longitude'], addr_info['latitude'])
-
-                # ---------- 2. 请求高德骑行路径（原始 JSON） ----------
-                route_data = self.amap.get_bicycle_route(origin, destination)
-
-                # ---------- 3. 快速提取摘要（不解析 polyline） ----------
-                summary = None
-                if route_data and route_data.get('errcode') == 0:
-                    data = route_data.get('data', {})
-                    paths = data.get('paths', [])
-                    if paths:
-                        path = paths[0]
-                        total_m = path.get('distance', 0)
-                        total_s = path.get('duration', 0)
-                        km = total_m / 1000.0
-                        minutes = total_s // 60
-                        steps_list = path.get('steps', [])
-                        first_instruction = steps_list[0].get('instruction', '') if steps_list else ''
-                        summary = "总路程{:.1f}公里，预计{}分钟。{}".format(km, minutes, first_instruction)
-                    else:
-                        summary = "骑行路线查询失败：无有效路径"
-                else:
-                    err_msg = route_data.get('errmsg', '未知错误') if route_data else '请求失败'
-                    summary = "骑行路线查询失败：{}".format(err_msg)
-
-                # ---------- 4. 立即发送 MCP 响应（用户快速收到结果） ----------
-                self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args=summary)
-
-                # ---------- 5. 后台线程完成完整解析（不阻塞主流程） ----------
-                # 只有当路径数据有效且需要完整解析时才创建后台任务
-                if route_data and route_data.get('errcode') == 0:
-                    def full_parse_worker():
-                        try:
-                            full_route = AmapAPI.parse_bicycle_route(route_data)
-                            if full_route:
-                                # 将完整的 Route 对象发布到系统总线，供其他模块（如 UI、存储）使用
-                                sys_bus.publish("ROUTE_FULL", full_route)
-                                logger.info("完整路径解析完成，共 {} 个步骤".format(len(full_route.steps)))
+                def bicycle_route_worker():
+                    try:
+                        origin = origin_raw if ',' in origin_raw else (
+                            lambda a: "{},{}".format(a['longitude'], a['latitude']) if 'error' not in a else None
+                        )(self.amap.get_addr_coding(origin_raw))
+                        if origin is None:
+                            self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args="起点地址解析失败")
+                            return
+                        destination = destination_raw if ',' in destination_raw else (
+                            lambda a: "{},{}".format(a['longitude'], a['latitude']) if 'error' not in a else None
+                        )(self.amap.get_addr_coding(destination_raw))
+                        if destination is None:
+                            self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args="终点地址解析失败")
+                            return
+                        route_data = self.amap.get_bicycle_route(origin, destination)
+                        summary = "骑行路线查询失败"
+                        if route_data and route_data.get('errcode') == 0:
+                            paths = route_data.get('data', {}).get('paths', [])
+                            if paths:
+                                p = paths[0]
+                                km = p.get('distance', 0) / 1000.0
+                                minutes = p.get('duration', 0) // 60
+                                first = p['steps'][0].get('instruction', '') if p.get('steps') else ''
+                                summary = "总路程{:.1f}公里，预计{}分钟。{}".format(km, minutes, first)
+                                def full_parse_worker():
+                                    try:
+                                        r = AmapAPI.parse_bicycle_route(route_data)
+                                        if r: sys_bus.publish("ROUTE_FULL", r)
+                                    except Exception as e: logger.error("后台解析异常: {}".format(e))
+                                Thread(target=full_parse_worker).start(stack_size=64)
                             else:
-                                logger.warn("完整路径解析失败（parse_bicycle_route 返回 None）")
-                        except Exception as e:
-                            logger.error("后台解析路径异常: {}".format(e))
-
-                    # 启动独立线程，栈大小根据需要调整（默认 4KB 通常够用）
-                    Thread(target=full_parse_worker).start(stack_size=64)
-
+                                summary = "骑行路线查询失败：无有效路径"
+                        self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args=summary)
+                    except Exception as e:
+                        logger.error("bicycle_route_worker 异常: {}".format(e))
+                Thread(target=bicycle_route_worker).start(stack_size=64)
                 return
 
             elif handle == "start_navigation":
                 destination = data_dict['payload']["params"]["arguments"]["destination"]
-
-                # ---------- 1. 获取 GPS（主动请求，短超时） ----------
-                lat, lng = self._request_gps_position(timeout_ms=1500)
-                if lat is None or lng is None:
-                    self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args="GPS未就绪，无法获取当前位置")
-                    return
-                origin = "{},{}".format(lng, lat)
-
-                # ---------- 2. 目的地地址解析 ----------
-                if ',' not in destination:
-                    addr_info = self.amap.get_addr_coding(destination)
-                    if 'error' in addr_info:
-                        self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args="目的地地址解析失败：" + addr_info['error'])
-                        return
-                    destination_coord = "{},{}".format(addr_info['longitude'], addr_info['latitude'])
-                    dest_name = addr_info.get('address', destination)
-                else:
-                    destination_coord = destination
-                    dest_name = destination
-
-                # ---------- 3. 请求高德骑行路径 ----------
-                route_data = self.amap.get_bicycle_route(origin, destination_coord)
-
-                # ---------- 4. 快速提取摘要（不解析 polyline） ----------
-                summary = None
-                if route_data and route_data.get('errcode') == 0:
-                    data = route_data.get('data', {})
-                    paths = data.get('paths', [])
-                    if paths:
-                        path = paths[0]
-                        total_m = path.get('distance', 0)
-                        total_s = path.get('duration', 0)
-                        km = total_m / 1000.0
-                        minutes = total_s // 60
-                        steps_list = path.get('steps', [])
-                        first_instruction = steps_list[0].get('instruction', '') if steps_list else ''
-                        summary = "导航已开始，目的地{}，全程{:.1f}公里，预计{}分钟。{}".format(dest_name, km, minutes, first_instruction)
-                    else:
-                        summary = "导航路线查询失败：无有效路径"
-                else:
-                    err_msg = route_data.get('errmsg', '未知错误') if route_data else '请求失败'
-                    summary = "导航路线查询失败：{}".format(err_msg)
-
-                # ---------- 5. 立即发送 MCP 响应 ----------
-                self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args=summary)
-                logger.info("导航启动结果已回执: {}".format(summary[:50]))
-
-                # ---------- 6. 后台线程完成完整解析并启动导航 ----------
-                if route_data and route_data.get('errcode') == 0:
-                    def full_parse_and_start_worker():
-                        try:
-                            full_route = AmapAPI.parse_bicycle_route(route_data)
-                            if full_route:
-                                self.nav_manager.start(full_route, current_lng=lng, current_lat=lat)
-                                logger.info("导航已启动，共 {} 个步骤".format(len(full_route.steps)))
+                def start_nav_worker():
+                    try:
+                        lat, lng = self._request_gps_position(timeout_ms=1500)
+                        if lat is None or lng is None:
+                            self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args="GPS未就绪")
+                            return
+                        origin = "{},{}".format(lng, lat)
+                        dest_name = destination
+                        if ',' not in destination:
+                            addr_info = self.amap.get_addr_coding(destination)
+                            if 'error' in addr_info:
+                                self.__protocol.mcp_tools_call(tool_name=handle, req_id=id,
+                                    args="目的地地址解析失败：" + addr_info['error'])
+                                return
+                            destination_coord = "{},{}".format(addr_info['longitude'], addr_info['latitude'])
+                            dest_name = addr_info.get('address', destination)
+                        else:
+                            destination_coord = destination
+                        route_data = self.amap.get_bicycle_route(origin, destination_coord)
+                        summary = "导航路线查询失败"
+                        if route_data and route_data.get('errcode') == 0:
+                            paths = route_data.get('data', {}).get('paths', [])
+                            if paths:
+                                p = paths[0]
+                                km = p.get('distance', 0) / 1000.0
+                                minutes = p.get('duration', 0) // 60
+                                first = p['steps'][0].get('instruction', '') if p.get('steps') else ''
+                                summary = "导航已开始，目的地{}，全程{:.1f}公里，预计{}分钟。{}".format(
+                                    dest_name, km, minutes, first)
+                                def full_parse_and_start_worker():
+                                    try:
+                                        r = AmapAPI.parse_bicycle_route(route_data)
+                                        if r:
+                                            self.nav_manager.start(r, current_lng=lng, current_lat=lat)
+                                    except Exception as e: logger.error("后台解析异常: {}".format(e))
+                                Thread(target=full_parse_and_start_worker).start(stack_size=64)
                             else:
-                                logger.warn("完整路径解析失败（parse_bicycle_route 返回 None）")
-                        except Exception as e:
-                            logger.error("后台解析路径异常: {}".format(e))
-
-                    Thread(target=full_parse_and_start_worker).start(stack_size=64)
-
+                                summary = "导航路线查询失败：无有效路径"
+                        self.__protocol.mcp_tools_call(tool_name=handle, req_id=id, args=summary)
+                    except Exception as e:
+                        logger.error("start_nav_worker 异常: {}".format(e))
+                Thread(target=start_nav_worker).start(stack_size=64)
                 return
 
             elif handle == "stop_navigation":
