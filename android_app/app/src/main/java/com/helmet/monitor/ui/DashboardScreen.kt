@@ -77,7 +77,8 @@ fun DashboardScreen(mqtt: MqttManager) {
                     )
                 }
             }
-        }
+            }  // Column 结束
+        }  // topBar lambda 结束
     ) { padding ->
         if (selectedTab == 1) {
             // 趋势图表 Tab
