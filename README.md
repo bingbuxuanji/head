@@ -7,7 +7,7 @@
 ```
 ├── src/                    # 嵌入式端 (QuecPython / EC800 模组)
 │   ├── _main.py            # 主程序入口
-│   ├── thingscloud.py      # MQTT 客户端
+│   ├── mqtt_client.py      # MQTT 客户端 (MqttClient)
 │   ├── protocol.py         # WebSocket 协议
 │   ├── utils.py            # 音频/充电/网络/串口管理
 │   ├── helmet_test.py      # 高德地图 API + 导航

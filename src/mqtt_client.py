@@ -17,7 +17,7 @@ Topic 约定:
     helmet/{device_id}/commands     — 下行指令
 
 使用示例:
-    client = ThingsCloudMQTT(
+    client = MqttClient(
         endpoint="192.168.1.100",     # 自建 MQTT 服务器地址
         port=1883,
         username="helmet_001",
@@ -36,7 +36,7 @@ from usr.logging import getLogger
 logger = getLogger(__name__)
 
 
-class ThingsCloudMQTT(object):
+class MqttClient(object):
     """
     智能头盔 MQTT 客户端（API 兼容原 ThingsCloud 接口）
 

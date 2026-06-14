@@ -15,6 +15,7 @@
 ### 变更
 
 - **UART 模拟器 GPS 协议修正**：GPS 从盲推改为请求-应答模式（上位机发 `g` → 从机回 `g<lat>,<lng>`），与真实协议一致；轨迹推进限频 5 秒，不足时发旧坐标；移除 `r` 键自动 GPS 功能
+- **MQTT 客户端重命名**：文件 `thingscloud.py` → `mqtt_client.py`，类 `ThingsCloudMQTT` → `MqttClient`，实例 `self.thingscloud` → `self.mqtt`，方法 `_upload_gps_to_thingscloud` → `_upload_gps_to_mqtt`
 
 ## [0.4.1] — 2026-06-13
 

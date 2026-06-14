@@ -16,7 +16,7 @@ import ujson as json
 from misc import USB
 #from usr.helmet import AmapAPI, Point, Step, Route
 from usr.helmet_test import AmapAPI, Point, Step, Route, Navigator, NavigationManager
-from usr.thingscloud import ThingsCloudMQTT
+from usr.mqtt_client import MqttClient
 # from usr import UI
 
 
@@ -159,7 +159,7 @@ class Application(object):
         self._replanning = False
 
         # ThingsCloud MQTT 云平台客户端 → 自建 MQTT 服务器
-        self.thingscloud = None
+        self.mqtt = None
         self._last_tc_upload = 0          # 上次上传时间戳（ms），用于限频
 
         # 后台 GPS 定时器（统一管理导航 + MQTT 的 GPS 请求）
@@ -209,32 +209,32 @@ class Application(object):
             self._on_gps_for_navigation(longitude, latitude)
 
             # MQTT 经纬度上报（限频 30 秒，含断线重连）
-            self._upload_gps_to_thingscloud(latitude, longitude)
+            self._upload_gps_to_mqtt(latitude, longitude)
         except Exception as e:
             logger.error("GPS parse error: {}".format(e))
 
-    def _upload_gps_to_thingscloud(self, latitude, longitude):
+    def _upload_gps_to_mqtt(self, latitude, longitude):
         """上传 GPS 坐标到自建 MQTT 服务器（限频 30 秒，含断线重连）
 
         由 _gps_default_handler 在收到 GPS 数据后调用，
         内部自行限频，不会每次收到 GPS 都上传。
         """
-        if self.thingscloud is None:
+        if self.mqtt is None:
             return
         now = utime.ticks_ms()
-        if not self.thingscloud.is_connected:
+        if not self.mqtt.is_connected:
             # 断线后限频重连，避免在网络不可用时频繁尝试
             if utime.ticks_diff(now, self._last_tc_upload) >= 30000:
-                if self.thingscloud.connect() == 0:
+                if self.mqtt.connect() == 0:
                     logger.info("MQTT 已重连")
                 self._last_tc_upload = now
         else:
             if utime.ticks_diff(now, self._last_tc_upload) >= 30000:
-                self.thingscloud.set_attributes({
+                self.mqtt.set_attributes({
                     "longitude": round(longitude, 6),
                     "latitude": round(latitude, 6)
                 })
-                self.thingscloud.publish_attributes()
+                self.mqtt.publish_attributes()
                 self._last_tc_upload = now
 
     # ---------- 传感器数据处理 ----------
@@ -271,9 +271,9 @@ class Application(object):
                 sys_bus.publish("SENSOR_DATA", updates)
 
                 # MQTT 属性上报（从机主动推送时即时上传）
-                if self.thingscloud and self.thingscloud.is_connected:
-                    self.thingscloud.set_attributes(updates)
-                    self.thingscloud.publish_attributes()
+                if self.mqtt and self.mqtt.is_connected:
+                    self.mqtt.set_attributes(updates)
+                    self.mqtt.publish_attributes()
         except Exception as e:
             logger.error("Sensor parse error: {}".format(e))
 
@@ -364,16 +364,16 @@ class Application(object):
         if instruction:
             self._notify_nav_text(instruction)
         # 路段切换时上报一次完整快照（GPS + 导航状态）
-        if self.thingscloud and self.thingscloud.is_connected:
+        if self.mqtt and self.mqtt.is_connected:
             self._gps_lock.acquire()
             lat, lng = self.current_lat, self.current_lng
             self._gps_lock.release()
             if lat is not None and lng is not None:
-                self.thingscloud.set_attributes({
+                self.mqtt.set_attributes({
                     "longitude": round(lng, 6),
                     "latitude": round(lat, 6),
                 })
-                self.thingscloud.publish_attributes()
+                self.mqtt.publish_attributes()
 
     def _on_nav_off_course(self):
         logger.info("导航偏航警告，触发重新规划")
@@ -884,7 +884,7 @@ class Application(object):
         MQTT_DEVICE_KEY = "helmet_key_001"   # 设备密钥，需与服务器 config.py 中一致
 
         try:
-            self.thingscloud = ThingsCloudMQTT(
+            self.mqtt = MqttClient(
                 endpoint=MQTT_SERVER_HOST,
                 port=MQTT_SERVER_PORT,
                 username=MQTT_DEVICE_ID,
@@ -893,15 +893,15 @@ class Application(object):
                 keepalive=30  # 穿透场景：30s PINGREQ 保持隧道活跃
             )
             # 注册属性元信息（本地记录，供数据处理管道校验参考）
-            self.thingscloud.register_attribute("temperature", unit="°C", min_val=-40, max_val=100, precision=0.1)
-            self.thingscloud.register_attribute("heart_rate", unit="BPM", min_val=0, max_val=300, precision=1)
-            self.thingscloud.register_attribute("longitude", unit="°", min_val=-180, max_val=180, precision=0.000001)
-            self.thingscloud.register_attribute("latitude", unit="°", min_val=-90, max_val=90, precision=0.000001)
-            self.thingscloud.register_attribute("velocity", unit="m/s", min_val=0, max_val=100, precision=0.01)
+            self.mqtt.register_attribute("temperature", unit="°C", min_val=-40, max_val=100, precision=0.1)
+            self.mqtt.register_attribute("heart_rate", unit="BPM", min_val=0, max_val=300, precision=1)
+            self.mqtt.register_attribute("longitude", unit="°", min_val=-180, max_val=180, precision=0.000001)
+            self.mqtt.register_attribute("latitude", unit="°", min_val=-90, max_val=90, precision=0.000001)
+            self.mqtt.register_attribute("velocity", unit="m/s", min_val=0, max_val=100, precision=0.01)
 
-            if self.thingscloud.connect() == 0:
+            if self.mqtt.connect() == 0:
                 logger.info("MQTT 服务器已连接: {}:{}".format(MQTT_SERVER_HOST, MQTT_SERVER_PORT))
-                self.thingscloud.publish_event("device_online", {"version": "1.0.0", "mode": "helmet"})
+                self.mqtt.publish_event("device_online", {"version": "1.0.0", "mode": "helmet"})
             else:
                 logger.warn("MQTT 服务器连接失败，跳过云平台上报")
         except Exception as e:

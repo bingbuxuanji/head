@@ -17,7 +17,7 @@
 - 实时骑行导航（路段跟踪、偏航检测、到达提醒）
 - 高精度球面几何计算（点到折线最近距离、方位角等）
 - sys_bus 事件总线（模块间解耦通信）
-- ThingsCloud MQTT 云平台集成（属性上报、事件上报、下行指令接收）
+- MQTT 云平台集成（属性上报、事件上报、下行指令接收）
 - 6 路 LED 指示灯（网络状态、AI 对话、电源状态）
 
 项目适用于 **智能头盔、智能音箱、AI 对话盒子** 等场景。
@@ -34,7 +34,7 @@ usr/
 ├── logging.py         # 日志系统（支持等级、线程安全）
 ├── OTA_test.py        # OTA 升级接口（获取 WebSocket 服务器地址与 token）
 ├── protocol.py        # WebSocket 客户端协议实现（JSON-RPC + MCP + 通知）
-├── thingscloud.py     # ThingsCloud MQTT 云平台客户端（属性上报、事件上报、下行指令）
+├── mqtt_client.py     # MQTT 客户端 MqttClient（属性上报、事件上报、下行指令）
 ├── threading.py       # 线程、锁、条件变量、事件、信号量、队列、线程池等并发原语
 ├── utils.py           # 工具类：音频管理、充电管理、网络管理、任务调度、按键、串口、命令分发器
 ├── uuid.py            # UUID v4 生成
@@ -100,13 +100,13 @@ usr/
 
 #### ⑥ `__tc_gps_thread` —— GPS 后台定时器线程
 
-- **功能**：统一管理所有定时 GPS 请求。根据导航状态动态切换轮询间隔：导航期间每 2 秒请求一次（驱动 `NavigationManager.update_position()`），非导航期间每 30 秒请求一次（驱动 ThingsCloud 云平台位置上报）。
-- **触发方式**：`_start_tc_gps_thread()` 在 `App.run()` 中 UART + ThingsCloud 初始化完成后启动。
+- **功能**：统一管理所有定时 GPS 请求。根据导航状态动态切换轮询间隔：导航期间每 2 秒请求一次（驱动 `NavigationManager.update_position()`），非导航期间每 30 秒请求一次（驱动 MQTT 云平台位置上报）。
+- **触发方式**：`_start_tc_gps_thread()` 在 `App.run()` 中 UART + MQTT 初始化完成后启动。
 - **生命周期**：随设备运行始终存活，直至 `_stop_tc_gps_thread()`（关机时调用）。
 - **关键点**：
   - 通过 `_gps_request_pending` 标志与 `_request_gps_position`（导航启动 / 偏航重规划时的阻塞式 GPS 请求）互斥，同一时刻只有一个 GPS 请求在进行中。
   - 内置 2 秒超时保护：若 MCU 未在 2 秒内回复，自动清除 pending 标志防止死锁。
-  - 与导航和对话完全解耦：无对话、无导航时后台仍持续运行，保证 ThingsCloud 位置上报不间断。
+  - 与导航和对话完全解耦：无对话、无导航时后台仍持续运行，保证 MQTT 位置上报不间断。
 
 **线程协作示意**：
 
@@ -132,7 +132,7 @@ Application
 ├── NetManager              # 4G 网络状态监控与恢复
 ├── TaskManager             # 优先级任务队列（后台执行）
 ├── WebSocketClient         # 云端通信（含 MCP 通知）
-├── ThingsCloudMQTT         # ThingsCloud 云平台 MQTT 客户端（属性/事件上报、下行指令）
+├── MqttClient              # MQTT 客户端（属性/事件上报、下行指令）
 ├── CommandDispatcher       # 串口消息路由
 ├── Massage                 # UART 接收与解析
 ├── Button / ExtInt         # 物理按键处理（长按/短按）
@@ -299,7 +299,7 @@ sequenceDiagram
 |------|--------------------|--------------|--------------------------------------------------------|
 | `b`  | 按键 (Button)      | 从机 → 主机  | 事件上报，数据首字节为按键编号 '1'~'4'                  |
 | `g`  | GPS 定位           | 双向         | 主机发送 `g` 请求坐标；从机回复 `g` + 经纬度            |
-| `s`  | 传感器 (Sensor)    | 从机 → 主机  | 预留，用于温度/湿度/加速度等传感器数据上报               |
+| `s`  | 传感器 (Sensor)    | 从机 → 主机  | 事件上报，格式 `s<体温>,<心率>,<速度>`，由从机每 5 秒主动推送 |
 | `p`  | 电源 (Power)       | 从机 → 主机  | 预留，用于电量/充电状态上报                             |
 | `n`  | 导航 (Navigation)  | 主机 → 从机  | 预留，用于向从机下发导航指令（如转向箭头）               |
 
@@ -375,7 +375,7 @@ flowchart TD
 
 **实现方式**：  
 
-- **被动接收**：通过串口 `g` 消息类型接收 GPS 坐标。`_gps_default_handler` 解析后自动识别经纬度顺序（支持 `lat,lng` 和 `lng,lat` 两种格式），验证范围后更新 `current_lat`/`current_lng`，喂给导航管理器，触发 ThingsCloud 上报。
+- **被动接收**：通过串口 `g` 消息类型接收 GPS 坐标。`_gps_default_handler` 解析后自动识别经纬度顺序（支持 `lat,lng` 和 `lng,lat` 两种格式），验证范围后更新 `current_lat`/`current_lng`，喂给导航管理器，触发 MQTT 上报。
 - **主动请求（阻塞式）**：`_request_gps_position(timeout_ms)` 通过串口发送 `'g'` 请求 GPS，轮询 `_gps_updated` 标志等待新数据返回。用于导航启动和偏航重规划时快速获取当前位置。
 - **后台定时轮询（非阻塞）**：`__tc_gps_thread` 独立线程统一管理 GPS 请求——导航期间每 2 秒、非导航期间每 30 秒通过串口发送 `'g'`。与阻塞式请求通过 `_gps_request_pending` 互斥，内置 2 秒超时保护防止死锁。
 
@@ -446,44 +446,56 @@ list = ["_xiao_tian_xiao_tian", name, "_jiang_gou_jiang_gou"]
 | `AsyncTask`           | 异步任务，`delay(seconds)` 延迟执行并返回 `Result` 对象                      |
 | `ThreadPoolExecutor`  | 线程池，支持 `submit` (返回 Result) 和 `shutdown`                           |
 
-### 4.15 ThingsCloud MQTT 云平台集成 (`thingscloud.py`)
+### 4.15 MQTT 云平台集成 (`mqtt_client.py`)
 
 **实现方式**：  
-基于 QuecPython `umqtt` 模块实现 ThingsCloud IoT 云平台的 MQTT 客户端，以 AccessToken（用户名）+ ProjectKey（密码）方式认证。在 `Application.run()` 中初始化连接，GPS 数据更新时自动限频上报。
+基于 QuecPython `umqtt` 模块连接自建 MQTT Broker，以用户名 + 密码方式认证。兼容旧版 ThingsCloud 参数名（`access_token` → username, `project_key` → password）。在 `Application.run()` 中初始化连接，GPS 数据更新时自动限频上报。
 
 **核心功能**：
 
 - **连接管理**：`connect()` / `disconnect()` / `is_connected`，支持 clean_session 参数。连接失败或断开后在 GPS 回调中自动限频重连（30 秒间隔）。
+- **保活线程**：连接成功后自动启动后台保活线程，每隔 `keepalive/2` 秒（默认 15 秒）调用 `check_msg()` 发送 MQTT PINGREQ + 接收下行消息，防止 broker 超时断开。
 - **属性管理**：`register_attribute(name, unit, min_val, max_val, precision)` 注册属性元信息；`set_attributes(data_dict)` 合并缓存属性值。
-- **属性上报**：`publish_attributes(data_dict=None)` 将属性 JSON 发布到 `attributes` 主题。GPS 坐标（`longitude`、`latitude`）每 30 秒限频上报一次。
+- **属性上报**：`publish_attributes(data_dict=None)` 将属性 JSON 发布到 `attributes` 主题。GPS 坐标（`longitude`、`latitude`）每 30 秒限频上报一次。传感器数据（温度、心率、速度）即时上报，不限频。
 - **事件上报**：`publish_event(event_id, params)` 将事件发布到 `events` 主题。设备上线时自动发布 `device_online` 事件（含固件版本 `version` 和产品模式 `mode`）。
-- **下行指令**：`set_downlink_callback(callback)` 注册回调函数，由 MQTT 内部线程回调驱动，接收云端下发的指令消息。
+- **下行指令**：`set_downlink_callback(callback)` 注册回调函数，由 MQTT 保活线程的 `check_msg()` 驱动接收云端下发的指令消息。
 - **线程安全**：内部使用 `Lock` 保护 `MQTTClient` 实例，确保多线程环境下的连接操作安全。
 
 **已注册的设备属性**：
 
 | 属性名       | 单位  | 范围         | 精度    | 用途               |
 |-------------|------|-------------|---------|-------------------|
-| `temperature` | °C   | -40 ~ 100   | 0.1     | 温度（预留传感器接入） |
-| `heart_rate`  | BPM  | 0 ~ 300     | 1       | 心率（预留传感器接入） |
-| `longitude`   | °    | -180 ~ 180  | 0.000001| GPS 经度，30 秒上报  |
-| `latitude`    | °    | -90 ~ 90    | 0.000001| GPS 纬度，30 秒上报  |
-| `velocity`    | m/s  | 0 ~ 100     | 0.01    | 速度（预留传感器接入） |
+| `temperature` | °C   | -40 ~ 100   | 0.1     | 体温，每 5 秒上报     |
+| `heart_rate`  | BPM  | 0 ~ 300     | 1       | 心率，每 5 秒上报     |
+| `longitude`   | °    | -180 ~ 180  | 0.000001| GPS 经度，30 秒上报   |
+| `latitude`    | °    | -90 ~ 90    | 0.000001| GPS 纬度，30 秒上报   |
+| `velocity`    | m/s  | 0 ~ 100     | 0.01    | 骑行速度，每 5 秒上报 |
 
 **上报链路**：
 
 ```mermaid
 flowchart TD
-    A[GPS 接收<br/>_gps_default_handler] --> B{限频判断<br/>距上次上传 ≥ 30 秒}
-    B -->|是| C{已连接?}
-    C -->|是| D[set_attributes<br/>longitude, latitude]
-    D --> E[publish_attributes]
-    C -->|否| F[connect 重连]
-    F -->|成功| G[发布 device_online 事件]
+    subgraph GPS[GPS 上报 30s 限频]
+        A1[GPS 接收<br/>_gps_default_handler] --> B1{限频判断<br/>距上次上传 ≥ 30 秒}
+        B1 -->|是| C1{已连接?}
+        C1 -->|是| D1[set_attributes<br/>longitude, latitude]
+        D1 --> E1[publish_attributes]
+        C1 -->|否| F1[connect 重连]
+    end
+    subgraph Sensor[传感器上报 即时]
+        A2[传感器接收<br/>_sensor_handler] --> C2{已连接?}
+        C2 -->|是| D2[set_attributes<br/>temperature, heart_rate, velocity]
+        D2 --> E2[publish_attributes]
+        C2 -->|否| F2[connect 重连]
+    end
+    subgraph Keepalive[保活]
+        K1[后台线程<br/>15s 间隔] --> K2[check_msg<br/>PINGREQ + 下行接收]
+    end
 ```
 
 **设计要点**：
-- 上报在 GPS 中断回调中完成，不额外创建线程，内存开销极低。
+- GPS 上报限频 30 秒，传感器上报不限频（每 5 秒即时上传）。
+- 保活后台线程独立运行，连接建立后自动启动，断开时自动停止。
 - 断线重连限频 30 秒，避免网络不可用时频繁尝试阻塞 CPU。
 - `publish_attributes` 无参调用时使用内部缓存值，避免重复传参。
 - 下行指令回调中异常由内部 try/except 捕获，防止 MQTT 内部线程崩溃。
@@ -627,6 +639,7 @@ self.uart.uartWrite('s')
 | `b`      | `'3'`  | 从机→主机  | 按键3按下           | `_cmd_volume_down`     | 音量减一                                    |
 | `b`      | `'4'`  | 从机→主机  | 按键4按下           | `_cmd_volume_up`       | 音量增一                                    |
 | `g`      | —      | 双向       | 主机发送 `g` 请求    | `_gps_default_handler` | 从机回复 GPS 坐标，主机解析并更新导航        |
+| `s`      | —      | 从机→主机  | 从机每 5 秒主动推送  | `_sensor_handler`      | 解析体温/心率/速度，发布 MQTT + sys_bus     |
 | `t`      | —      | 主机→从机  | 导航事件触发         | （串口发送）           | 推送导航文字到从机，从机负责持续显示          |
 
 ---
@@ -636,7 +649,6 @@ self.uart.uartWrite('s')
 代码中标记 `NotImplementedError` 或需要业务填充的方法：
 
 - `handle_stt_message`：语音识别结果文本处理
-- `handle_tts_message`：TTS 开始/停止时的 LED 闪烁逻辑（当前仅在 `state="start"` 时启动 `wifi_green_led` 闪烁）
 - `handle_llm_message`：大模型文本响应
 - `handle_iot_message`：物联网设备状态上报
 - `handle_error_message`：错误处理
@@ -668,7 +680,7 @@ import usr._main
 - **事件驱动 + 多线程协作**：KWS/VAD 音频流 → WebSocket 云端对话 → MCP 工具调用 → 本地 TTS 播报，全程通过事件、条件变量和线程解耦。
 - **离线 + 在线混合**：唤醒词和 VAD 离线运行，对话和路线查询走云端，导航指令播报使用本地 TTS 避免网络延迟。
 - **导航能力完备**：从路线规划（高德 API）→ 路径解析（polyline 展开）→ 实时跟踪（球面几何匹配）→ 偏航检测 → 路段切换提醒 → 到达通知，形成完整闭环。
-- **可扩展性强**：MCP 工具注册（JSON-RPC 2.0）、串口命令注册（消息类型 + 命令ID 两级路由）、sys_bus 事件总线、ThingsCloud MQTT 云平台集成，四条扩展路径覆盖云端、硬件外设、模块间通信和 IoT 云平台。
+- **可扩展性强**：MCP 工具注册（JSON-RPC 2.0）、串口命令注册（消息类型 + 命令ID 两级路由）、sys_bus 事件总线、MQTT 云平台集成，四条扩展路径覆盖云端、硬件外设、模块间通信和 IoT 云平台。
 - **资源友好**：针对 MCU 有限内存，采用小顶堆优先级队列、按需创建/销毁线程、栈大小可配置、后台异步解析不阻塞主流程等设计。
 
 项目当前仍处于活跃开发阶段，持续迭代中。
@@ -702,7 +714,7 @@ import usr._main
 |------|-------------------------|-------------|-------------------------|---------|
 | `b`  | 按键 (Button)           | 从机 → 主机 | 事件上报                | 已实现  |
 | `g`  | GPS 定位                | 双向        | 请求-响应               | 已实现  |
-| `s`  | 环境传感器 (Sensor)     | 双向        | 请求-响应 / 事件上报    | 预留    |
+| `s`  | 环境传感器 (Sensor)     | 从机 → 主机 | 事件上报                | 已实现  |
 | `p`  | 电源管理 (Power)        | 从机 → 主机 | 事件上报                | 预留    |
 | `n`  | 导航指示 (Navigation)   | 主机 → 从机 | 指令下发                | 预留    |
 | `l`  | 灯光控制 (Light)        | 主机 → 从机 | 指令下发                | 预留    |
@@ -802,17 +814,12 @@ g + <经度: 浮点数> + , + <纬度: 浮点数>
 
 **主机主动轮询**：
 
-在导航进行中，主机每 2 秒通过串口发送一次 `g` 请求，确保导航位置持续更新：
+由 `__tc_gps_thread` 后台线程统一管理，与对话流程完全解耦：
 
-```python
-if self.nav_manager.is_navigating and self.uart and not is_listen_flag:
-    now = utime.ticks_ms()
-    if utime.ticks_diff(now, last_gps_poll) >= 2000:
-        self.uart.uartWrite('g')
-        last_gps_poll = now
-```
-
-注意：仅在未上传音频时（`is_listen_flag == False`）发起 GPS 请求，避免 UART 写入与音频通路产生竞争。
+- 导航期间：每 **2 秒** 通过串口发送一次 `g` 请求
+- 非导航期间：每 **30 秒** 发送一次（用于 MQTT 位置上报）
+- 通过 `_gps_request_pending` 标志与阻塞式 GPS 请求（导航启动/偏航重规划）互斥
+- 内置 2 秒超时保护，防止从机无响应时死锁
 
 ### 9.6 导航文字模块 — `t`
 
@@ -847,46 +854,50 @@ t + <导航文字: UTF-8 编码>
 主机 → 从机: t您已到达目的地，导航结束
 ```
 
-### 9.7 环境传感器模块 — `s`（预留）
+### 9.7 环境传感器模块 — `s`
 
-**方向**：双向
+**方向**：从机 → 主机（事件上报）
 
 **报文格式**：
 
 ```
-s + <传感器类型: 1 字节> + <数值>
+s + <体温: 浮点数> + , + <心率: 整数> + , + <速度: 浮点数>
 ```
+
+**字段说明**：
+
+| 字段              | 类型    | 范围       | 示例   |
+|-------------------|---------|------------|--------|
+| 体温 (temperature)| 浮点数  | 36.0~42.0  | `36.5` |
+| 心率 (heart_rate) | 整数    | 40~200     | `75`   |
+| 速度 (velocity)   | 浮点数  | 0~50       | `12.3` |
 
 **交互模式**：
 
-- **事件上报**：当传感器数值超过阈值或发生显著变化时，从机主动推送。
-- **请求-响应**：主机发送 `s<传感器类型>` 请求指定数据，从机回复 `s<传感器类型><数值>`。
+- **事件上报**：从机每 5 秒主动推送一次传感器数据（温度、心率、骑行速度），由 `_sensor_handler` 接收处理。
+- 占位值：`-1` 表示该传感器无数据（如 `s-1,-1,-1`）。
 
-**扩展示例**：
+**主机侧处理**：
 
-| 方向         | 报文      | 含义              |
-|--------------|-----------|-------------------|
-| 从机 → 主机  | `st25.5`  | 温度 25.5℃        |
-| 从机 → 主机  | `sh60`    | 湿度 60%          |
-| 从机 → 主机  | `sa1.05`  | 加速度 1.05g      |
-| 主机 → 从机  | `st`      | 请求温度数据       |
-| 从机 → 主机  | `st26.0`  | 回复温度 26.0℃    |
+1. `CommandDispatcher` 将 `s` 消息路由到 `_sensor_handler`。
+2. 解析三个逗号分隔的浮点数。
+3. 非负值更新到 MQTT 属性缓存并即时上传（不限频）。
+4. 发布 `SENSOR_DATA` 事件到 `sys_bus`。
 
-**实现建议**：
+**示例**：
 
-```python
-# 注册方式（主机侧）
-self.dispatcher.register('s', self._handle_sensor)
-
-def _handle_sensor(self, data):
-    """data 首字节为传感器子类型，后续为数值"""
-    if len(data) < 2:
-        return
-    sensor_type = chr(data[0])
-    value = data[1:].decode().strip()
-    logger.info("传感器上报: type={}, value={}".format(sensor_type, value))
-    sys_bus.publish("SENSOR_DATA", {"type": sensor_type, "value": value})
 ```
+从机 → 主机: s36.5,75,12.3    # 体温36.5°C，心率75BPM，速度12.3m/s
+从机 → 主机: s-1,72,-1        # 仅心率72BPM有效，温度和速度无数据
+```
+
+**告警触发**（模拟器支持 `a` / `a1` / `a2` / `a3` 命令手动触发告警数据）：
+
+| 告警类型   | 报文示例          | 触发条件               |
+|------------|-------------------|------------------------|
+| 体温告警   | `s38.8,75,5.2`   | 体温 > 38.5°C          |
+| 心率告警   | `s36.5,180,8.1`  | 心率 > 160 BPM         |
+| 双重告警   | `s39.2,190,3.5`  | 体温 + 心率同时超阈值   |
 
 ### 9.8 数据传输原则
 
@@ -982,9 +993,7 @@ void loop() {
 | 按键事件上报   | `b<按键编号>`      | 从机 → 主机  |
 | GPS 请求       | `g`                | 主机 → 从机  |
 | GPS 响应       | `g<经度>,<纬度>`   | 从机 → 主机  |
-| 传感器事件上报 | `s<子类型><数值>`  | 从机 → 主机  |
-| 传感器查询请求 | `s<子类型>`        | 主机 → 从机  |
-| 传感器查询响应 | `s<子类型><数值>`  | 从机 → 主机  |
+| 传感器数据上报 | `s<体温>,<心率>,<速度>` | 从机 → 主机  |
 | 导航文字下发   | `t<UTF-8 文字>`    | 主机 → 从机  |
 
 **关键原则**：
