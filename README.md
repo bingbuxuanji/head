@@ -39,9 +39,9 @@ cd mqtt_server && python run.py
 ### 2. 模拟设备数据
 
 ```bash
-pip install paho-mqtt
+pip install pyserial
 python tests/uart_slave_simulator.py COM3
-# 按 r 开始 GPS 轨迹，按 d 开始传感器上报
+# GPS 由上位机请求驱动（无需手动操作），按 d 开始传感器上报
 ```
 
 ### 3. Android App

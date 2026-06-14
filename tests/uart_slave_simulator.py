@@ -20,8 +20,7 @@ UART 下位机模拟器 —— PC 端测试脚本
 交互命令（运行时键盘输入）：
   Enter       发送一条空行查看帮助
   1/2/3/4     发送按键事件 b1~b4
-  g           手动发送一条模拟 GPS 坐标
-  r           开始/停止自动回复 GPS（模拟真实定位）
+  g           手动发送一次模拟 GPS 坐标（不等待请求，直接推送）
   m           手动发送一次传感器数据 (温度/心率/速度, 随机值)
   d           开始/停止自动传感器上报 (每 5 秒)
   l<lat>,<lng> 设置当前位置
@@ -118,14 +117,13 @@ class UartSlaveSimulator:
         self.baudrate = baudrate
         self.ser = None
 
-        # GPS 模拟
+        # GPS 模拟（只在收到上位机 g 请求时应答，不主动推送）
         self.current_lat = DEFAULT_GPS_ROUTE[0][0]
         self.current_lng = DEFAULT_GPS_ROUTE[0][1]
         self.route = DEFAULT_GPS_ROUTE
         self.route_index = 0
-        self.auto_gps_enabled = False
-        self.gps_thread = None
-        self.gps_stop_event = threading.Event()
+        self._last_gps_response_time = 0          # 上次应答时间戳
+        self._gps_response_interval = 5.0          # GPS 应答最小间隔（秒）
 
         # 传感器模拟（默认开启，定时上报温度/心率/速度）
         self.auto_sensor_enabled = True
@@ -156,7 +154,6 @@ class UartSlaveSimulator:
 
     def disconnect(self):
         """关闭串口"""
-        self.stop_auto_gps()
         self.stop_auto_sensor()
         if self.ser and self.ser.is_open:
             self.ser.close()
@@ -169,37 +166,8 @@ class UartSlaveSimulator:
             self.route_index += 1
             self.current_lat, self.current_lng = self.route[self.route_index]
 
-    def _gps_auto_reply_worker(self):
-        """后台线程：每隔 2 秒模拟一次 GPS 轨迹移动，到达终点后停在原地继续发送"""
-        while not self.gps_stop_event.is_set():
-            self._advance_route()
-            gps_str = f"g{self.current_lat:.6f},{self.current_lng:.6f}"
-            self._send_raw(gps_str.encode('utf-8'))
-            print(f"  {Color.CYAN}[GPS] → {gps_str}{Color.RESET}")
-            self.gps_stop_event.wait(timeout=2.0)
-
-    def start_auto_gps(self):
-        """开始自动模拟 GPS 轨迹"""
-        if self.auto_gps_enabled:
-            return
-        self.auto_gps_enabled = True
-        self.gps_stop_event.clear()
-        self.gps_thread = threading.Thread(target=self._gps_auto_reply_worker, daemon=True)
-        self.gps_thread.start()
-        print(f"{Color.GREEN}[GPS] 自动轨迹已启动 (间隔 2s, {len(self.route)} 个路径点){Color.RESET}")
-
-    def stop_auto_gps(self):
-        """停止自动 GPS 轨迹"""
-        if not self.auto_gps_enabled:
-            return
-        self.auto_gps_enabled = False
-        self.gps_stop_event.set()
-        if self.gps_thread:
-            self.gps_thread.join(timeout=3.0)
-        print(f"{Color.YELLOW}[GPS] 自动轨迹已停止{Color.RESET}")
-
-    def send_manual_gps(self):
-        """手动发送一次当前 GPS 坐标"""
+    def send_gps_response(self):
+        """发送当前 GPS 坐标（不推进轨迹，由调用方决定是否推进）"""
         gps_str = f"g{self.current_lat:.6f},{self.current_lng:.6f}"
         self._send_raw(gps_str.encode('utf-8'))
         print(f"  {Color.CYAN}[GPS] → {gps_str}{Color.RESET}")
@@ -315,12 +283,14 @@ class UartSlaveSimulator:
             print(f"{Color.YELLOW}[NAV 显示] ← t: {text}{Color.RESET}")
 
         elif msg_type == 'g':
-            # GPS 请求：模组请求从机返回当前 GPS 坐标
+            # GPS 请求：模组请求从机返回当前 GPS 坐标，从机应答（最少间隔 5 秒才推进轨迹）
             print(f"{Color.CYAN}[GPS 请求] ← g{Color.RESET}")
-            # 自动回复（如果未开启自动轨迹，手动回复一次当前位置）
-            if not self.auto_gps_enabled:
-                time.sleep(0.05)  # 模拟从机处理延迟
-                self.send_manual_gps()
+            now = time.time()
+            if now - self._last_gps_response_time >= self._gps_response_interval:
+                self._advance_route()
+                self._last_gps_response_time = now
+            time.sleep(0.05)  # 模拟从机处理延迟
+            self.send_gps_response()
 
         elif msg_type == 'b':
             # 按键事件回显（通常模组不会发 b 给从机，但记录以防万一）
@@ -389,8 +359,7 @@ def print_banner(sim: UartSlaveSimulator):
 
 {Color.BOLD}键盘命令:{Color.RESET}
   1 / 2 / 3 / 4   发送按键事件 (关机/对话/音量-/音量+)
-  g               手动发送一次当前 GPS 坐标
-  r               开始/停止 自动 GPS 轨迹模拟 (每 2 秒)
+  g               手动发送一次当前 GPS 坐标（不受请求-应答约束）
   l <lat>,<lng>   设置当前位置
   m               手动发送一次传感器数据 (温度/心率/速度, 随机值)
   d               开始/停止 自动传感器上报 (每 5 秒)
@@ -403,13 +372,12 @@ def print_banner(sim: UartSlaveSimulator):
 
 def print_stats(sim: UartSlaveSimulator):
     """打印统计信息"""
-    gps_status = "运行中 (2s间隔)" if sim.auto_gps_enabled else "已停止"
     sensor_status = "运行中 (5s间隔, 随机值)" if sim.auto_sensor_enabled else "已停止"
     print(f"""
 {Color.BOLD}── 统计 ──{Color.RESET}
   串口:        {sim.port} @ {sim.baudrate}
   当前位置:    {sim.current_lat:.6f}, {sim.current_lng:.6f}
-  GPS 轨迹:    {gps_status} (路径点 {sim.route_index + 1}/{len(sim.route)})
+  GPS 轨迹:    仅在收到上位机 g 请求时应答 (路径点 {sim.route_index + 1}/{len(sim.route)})
   传感器上报:  {sensor_status}
   接收帧数:    {sim.rx_count}
   发送帧数:    {sim.tx_count}
@@ -432,14 +400,8 @@ def handle_keyboard(sim: UartSlaveSimulator, line: str) -> bool:
         return True
 
     if line == 'g':
-        sim.send_manual_gps()
-        return True
-
-    if line == 'r':
-        if sim.auto_gps_enabled:
-            sim.stop_auto_gps()
-        else:
-            sim.start_auto_gps()
+        sim._advance_route()
+        sim.send_gps_response()
         return True
 
     if line == 'm':
@@ -485,8 +447,8 @@ def handle_keyboard(sim: UartSlaveSimulator, line: str) -> bool:
 def main_loop(sim: UartSlaveSimulator):
     """主循环：串口轮询 + 键盘输入"""
     print_banner(sim)
-    sim.start_auto_gps()     # 默认开启 GPS 轨迹模拟
     sim.start_auto_sensor()  # 默认开启传感器定时上报
+    # GPS 不再自动推送，仅在收到上位机 g 请求时应答
 
     # 使用线程读键盘输入，避免 input() 阻塞串口轮询
     input_queue = []

@@ -366,6 +366,10 @@ class NavigationManager:
         if not self.is_navigating or not self.navigator:
             return False, False, False
 
+        # 坐标校验在前，防止无效坐标污染 last_lng/last_lat
+        if lng is None or lat is None or abs(lat) > 90 or abs(lng) > 180:
+            return False, False, False
+
         self.last_lng = lng
         self.last_lat = lat
 

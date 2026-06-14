@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## [0.4.2] — 2026-06-14
+
+### 修复
+
+- **MQTT 保活缺失**：新增保活后台线程，周期调用 `check_msg()` 发送 PINGREQ + 接收下行消息，解决 broker 超时断开和下行指令无法接收的问题
+- **WebSocket 接收线程静默死亡**：`recv()` 内 `json.loads` 遇到非 JSON 文本时不再崩溃整条接收线程
+- **日志级别修复**：WebSocket 接收线程异常、JSON 消息处理异常、聊天线程异常的日志从 `info`/`debug` 提至 `error`，避免关键错误静默丢失
+- **TTS 消息伪异常**：移除 `handle_tts_message` 中残留的 `raise NotImplementedError`，TTS 状态管理本身已完整
+- **导航启动静默失败**：`get_bicycle_route` 和 `start_navigation` 的异步路线解析失败时增加错误日志和语音通知
+- **无效 GPS 坐标污染缓存**：`NavigationManager.update_position` 坐标校验前置，防止无效坐标写入 `last_lng/last_lat` 导致 `get_status()` 返回错误距离
+- **导航路段切换 MQTT 上报**：路段切换时主动上报 GPS + 导航状态快照到 MQTT
+
+### 变更
+
+- **UART 模拟器 GPS 协议修正**：GPS 从盲推改为请求-应答模式（上位机发 `g` → 从机回 `g<lat>,<lng>`），与真实协议一致；轨迹推进限频 5 秒，不足时发旧坐标；移除 `r` 键自动 GPS 功能
+
 ## [0.4.1] — 2026-06-13
 
 ### 新增

@@ -162,12 +162,12 @@ class WebSocketClient(object):
             try:
                 raw = self.recv()
             except Exception as e:
-                logger.info("{} recv thread break, Exception details: {}".format(self, repr(e)))
+                logger.error("{} recv thread break, Exception details: {}".format(self, repr(e)))
                 self.connect_flag = False
                 break
-            
+
             if raw is None or raw == "":
-                logger.info("{} recv thread break, Exception details: read none bytes, websocket disconnect".format(self))
+                logger.error("{} recv thread break, Exception details: read none bytes, websocket disconnect".format(self))
                 self.connect_flag = False
                 break
             
@@ -200,7 +200,7 @@ class WebSocketClient(object):
         try:
             self.__json_message_handler(msg)
         except Exception as e:
-            logger.debug("{} handle json message failed, Exception details: {}".format(self, repr(e)))
+            logger.error("{} handle json message failed, Exception details: {}".format(self, repr(e)))
             
     # def topic(text_value):
         
@@ -221,9 +221,13 @@ class WebSocketClient(object):
         """receive data from server, return None or "" means disconnection"""
         data = self.cli.recv()
         if type(data) == str:
-            data_dict = json.loads(data)
+            try:
+                data_dict = json.loads(data)
+            except Exception:
+                # 服务端可能发非 JSON 文本（纯文本、XML 等），不崩溃
+                return data
             text_value = data_dict.get("text")
-            
+
             # 对比 text_value 和上次的值是否相同
             if text_value != self.__last_text_value and text_value is not None:
                 print(text_value)  # 仅在不同时打印

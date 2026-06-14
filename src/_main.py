@@ -363,6 +363,17 @@ class Application(object):
         instruction = step.instruction if step.instruction else ''
         if instruction:
             self._notify_nav_text(instruction)
+        # 路段切换时上报一次完整快照（GPS + 导航状态）
+        if self.thingscloud and self.thingscloud.is_connected:
+            self._gps_lock.acquire()
+            lat, lng = self.current_lat, self.current_lng
+            self._gps_lock.release()
+            if lat is not None and lng is not None:
+                self.thingscloud.set_attributes({
+                    "longitude": round(lng, 6),
+                    "latitude": round(lat, 6),
+                })
+                self.thingscloud.publish_attributes()
 
     def _on_nav_off_course(self):
         logger.info("导航偏航警告，触发重新规划")
@@ -628,7 +639,7 @@ class Application(object):
                     utime.sleep_ms(5)
                     # logger.debug("read opus data length: {}".format(len(data)))
         except Exception as e:
-            logger.debug("working thread handler got Exception: {}".format(repr(e)))
+            logger.error("working thread handler got Exception: {}".format(repr(e)))
         finally:
             print("__chat_process exit")
             self.lte_green_led.off()
@@ -688,7 +699,6 @@ class Application(object):
             self.wifi_green_led.off()
             self._svr_tts_active = False
             self._svr_tts_stop_time = utime.ticks_ms()
-        raise NotImplementedError("handle_tts_message not implemented")
 
 #"happy" "cool"  "angry"  "think"
 # ... existing code ...
@@ -755,8 +765,12 @@ class Application(object):
                                 def full_parse_worker():
                                     try:
                                         r = AmapAPI.parse_bicycle_route(route_data)
-                                        if r: sys_bus.publish("ROUTE_FULL", r)
-                                    except Exception as e: logger.error("后台解析异常: {}".format(e))
+                                        if r:
+                                            sys_bus.publish("ROUTE_FULL", r)
+                                        else:
+                                            logger.error("骑行路线解析失败，parse_bicycle_route 返回 None")
+                                    except Exception as e:
+                                        logger.error("后台解析异常: {}".format(e))
                                 Thread(target=full_parse_worker).start(stack_size=64)
                             else:
                                 summary = "骑行路线查询失败：无有效路径"
@@ -802,7 +816,12 @@ class Application(object):
                                         r = AmapAPI.parse_bicycle_route(route_data)
                                         if r:
                                             self.nav_manager.start(r, current_lng=lng, current_lat=lat)
-                                    except Exception as e: logger.error("后台解析异常: {}".format(e))
+                                        else:
+                                            logger.error("导航路线解析失败，parse_bicycle_route 返回 None")
+                                            self._notify_nav_text("导航启动失败，路线解析错误")
+                                    except Exception as e:
+                                        logger.error("后台解析异常: {}".format(e))
+                                        self._notify_nav_text("导航启动失败")
                                 Thread(target=full_parse_and_start_worker).start(stack_size=64)
                             else:
                                 summary = "导航路线查询失败：无有效路径"
