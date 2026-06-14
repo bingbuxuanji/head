@@ -3,8 +3,11 @@ package com.helmet.monitor
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -38,6 +41,7 @@ class MainActivity : ComponentActivity() {
         startService(Intent(this, MonitorService::class.java))
 
         requestNotificationPermission()
+        requestBatteryOptimizationExemption()
 
         setContent {
             MaterialTheme(
@@ -48,6 +52,21 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 DashboardScreen()
+            }
+        }
+    }
+
+    /** 引导用户关闭电池优化，避免熄屏后系统杀进程 */
+    private fun requestBatteryOptimizationExemption() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            } catch (_: Exception) {
+                Toast.makeText(this, "请在系统设置中关闭本应用的电池优化", Toast.LENGTH_LONG).show()
             }
         }
     }

@@ -29,6 +29,10 @@ import kotlinx.coroutines.launch
  */
 class MonitorService : Service() {
 
+    companion object {
+        @Volatile var isRunning = false
+    }
+
     private lateinit var mqtt: MqttManager
     private var mediaPlayer: MediaPlayer? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -39,6 +43,8 @@ class MonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        isRunning = true
+        WatchdogReceiver.schedule(this)
         mqtt = MqttManager(this).apply {
             // 连接状态 → DataRepository
             scope.launch { connected.collect { DataRepository.setConnected(it) } }
@@ -71,6 +77,8 @@ class MonitorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        isRunning = false
+        WatchdogReceiver.cancel(this)
         mqtt.disconnect()
         mediaPlayer?.release()
         super.onDestroy()
