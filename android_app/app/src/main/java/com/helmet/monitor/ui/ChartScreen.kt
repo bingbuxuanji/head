@@ -100,7 +100,7 @@ fun ChartScreen() {
                 yLabel = "°C",
                 yRange = 35.0f..42.0f,
                 data = sensorData.mapNotNull { r ->
-                    r.temperature?.let { r.timestamp to it }
+                    r.temperature?.toFloat()?.let { r.timestamp to it }
                 },
                 tappedPoint = tappedPoint
             )
