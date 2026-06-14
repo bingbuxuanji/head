@@ -12,7 +12,7 @@
 │   ├── utils.py            # 音频/充电/网络/串口管理
 │   ├── helmet_test.py      # 高德地图 API + 导航
 │   ├── threading.py        # 并发原语 (MicroPython)
-│   └── readme.md           # 嵌入式端详细文档
+│   └── readme.md           # 📖 嵌入式端详细文档（架构/协议/导航/MQTT/MCP）
 ├── mqtt_server/            # MQTT Broker (Python asyncio)
 │   ├── broker.py           # Broker 核心
 │   ├── data_handler.py     # 数据处理管道
@@ -82,3 +82,14 @@ python tests/uart_slave_simulator.py COM3
 - MQTT 断线自动退避重连（2s→4s→8s→60s）
 - 传感器数据持久化缓存，重启不丢
 - 体温 > 37.5°C / 心率 > 150 BPM 实时告警
+
+## 更多文档
+
+嵌入式端（EC800 模组）的完整技术文档见 **[src/readme.md](src/readme.md)**，涵盖：
+
+- 核心线程模型（6 类线程协作）
+- MCP 工具扩展指南
+- 串口通信协议规范（报文帧格式、模块简写表、交互模式）
+- GPS 定位与实时导航（偏航检测、路段跟踪、自动重规划）
+- MQTT 云平台集成（保活、上报链路）
+- 音频管理（KWS/VAD/TTS 回调队列）
