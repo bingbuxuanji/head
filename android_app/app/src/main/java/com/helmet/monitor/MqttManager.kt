@@ -50,6 +50,12 @@ class MqttManager(context: Context, clientSuffix: String = "") {
 
     private var reconnectJob: Job? = null
     private var alertCallback: ((AlertItem) -> Unit)? = null
+    private var dataCallback: ((HelmetData) -> Unit)? = null
+
+    /** 注册数据接收回调（用于文件写入等外部操作） */
+    fun onDataReceived(callback: (HelmetData) -> Unit) {
+        dataCallback = callback
+    }
 
     fun connect(onAlert: ((AlertItem) -> Unit)? = null) {
         alertCallback = onAlert
@@ -143,6 +149,7 @@ class MqttManager(context: Context, clientSuffix: String = "") {
         )
         _latestData.value = merged
         prefs.edit().putString("data", gson.toJson(merged)).apply()
+        dataCallback?.invoke(merged)
     }
 
     private fun handleAlert(obj: JsonObject) {

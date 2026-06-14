@@ -37,11 +37,15 @@ fun DashboardScreen(mqtt: MqttManager) {
     // 本地变量副本：委托属性无法 smart-cast，用 val 拷贝后 Kotlin 可以安全推断非空
     val helmet = data
 
+    var selectedTab by remember { mutableStateOf(0) }
+    val tabTitles = listOf("实时监控", "趋势图表")
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("头盔监控") },
-                actions = {
+            Column {
+                TopAppBar(
+                    title = { Text("头盔监控") },
+                    actions = {
                     // 连接状态指示灯
                     Box(
                         modifier = Modifier
@@ -61,8 +65,23 @@ fun DashboardScreen(mqtt: MqttManager) {
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 )
             )
+            TabRow(selectedTabIndex = selectedTab) {
+                tabTitles.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        text = { Text(title) }
+                    )
+                }
+            }
         }
     ) { padding ->
+        if (selectedTab == 1) {
+            // 趋势图表 Tab
+            Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+                ChartScreen()
+            }
+        } else {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -194,7 +213,8 @@ fun DashboardScreen(mqtt: MqttManager) {
                 AlertCard(alert)
             }
         }
-    }
+    }   // else 块结束
+}
 }
 
 /**
