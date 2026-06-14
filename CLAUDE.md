@@ -37,7 +37,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `helmet_test.py` | AmapAPI / Navigator / NavigationManager（骑行导航 + 球面几何） |
 | `threading.py` | 并发原语（Thread, Lock, Condition, Event, Queue 等） |
 
-### 线程模型（6 类 + 1）
+### 线程模型（6 类）
 
 | 线程 | 职责 | 生命周期 |
 |------|------|---------|
@@ -47,7 +47,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `__tc_gps_thread` | GPS 定时请求（导航 2s / 待机 30s） | `_start_tc_gps_thread()` → 关机 |
 | UART TX 线程 | 从队列取数据写硬件，串行化写请求 | 常驻 |
 | 后台解析线程 | 异步解析高德 polyline 数据 | 单次用完销毁 |
-| **MQTT 保活线程** | `check_msg()` 发 PINGREQ + 收下行 | `connect()` → `disconnect()` |
+
+> MQTT 保活由 QuecPython `umqtt` 库内置处理，无需手动 `check_msg()` 线程。
 
 ### 导航事件链路
 
@@ -136,6 +137,31 @@ Kotlin + Jetpack Compose 实现的监控 App：
 
 连接地址配置见 `MqttManager.kt`。
 
+### 本地数据存储
+
+传感器数据和 GPS 轨迹以 JSONL 文件存储在手机本地：
+
+```
+filesDir/
+├── sensor/{yyyyMMdd}.jsonl   — 每行: {ts, temperature, heart_rate, velocity}
+└── gps/{yyyyMMdd}.jsonl      — 每行: {ts, longitude, latitude}
+```
+
+- `SensorFileStore` — 单例，提供 append / readSensors / readGpsTrack / listDates
+- 收到 MQTT 数据后通过 `MqttManager.onDataReceived` 回调自动写入
+- 趋势图表和轨迹回放从文件读取，不依赖服务端存储
+
+### Android 开发常见错误
+
+> **这些是此前修改 Android 代码时犯过的错误，修改同类代码时注意避免。**
+
+| 错误 | 原因 | 正确做法 |
+|------|------|----------|
+| 缺少 `remember` / `mutableStateOf` import | 加 Tab 切换等新状态时忘了导入 | 新增 Compose 状态 API 时检查 import：`remember`、`mutableStateOf`、`setValue`、`getValue` |
+| `Pair<Long, Double>` 无法传参给 `Pair<Long, Float>` | Kotlin 类型推导：`double?.let { ts to it }` 推导为 `Pair<Long, Double>` | 显式转换：`double?.toFloat()?.let { ts to it }` |
+| `topBar = { Column { ... } }` 少一个 `}` | `topBar` lambda 内嵌套 `Column` 后，Column 的 `}` 和 lambda 的 `}` 都需要 | 写完后逐层数大括号：Column 一层，topBar lambda 一层 |
+| Scaffold 报 "No value passed for content" | 通常是 `topBar` 或其它参数 lambda 少闭合大括号，导致 content lambda 被当成参数的一部分 | 检查 Scaffold 的大括号配对 |
+
 ---
 
 ## 测试工具 (tests/)
@@ -178,5 +204,5 @@ python tests/uart_slave_simulator.py COM3
 - 不要改 `Massage.uartWrite` 回直接写硬件
 - 导航偏航回调不要设为可能重复触发（已有 `_off_course_notified` 去重和 `_replanning` 防重入）
 - 不要在 `_tts_cb` 中阻塞或加耗时操作
-- 不要假设 MQTT 会自动保活，`check_msg()` 由 `MqttClient` 后台线程维护
+- 不要手动实现 MQTT 保活线程，QuecPython `umqtt` 库内置自动 PINGREQ
 - 传感器数据不要限频上传（与 GPS 的 30s 限频不同）
