@@ -24,18 +24,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.helmet.monitor.AlertItem
+import com.helmet.monitor.DataRepository
 import com.helmet.monitor.HelmetData
-import com.helmet.monitor.MqttManager
 
 /**
  * 主仪表盘 UI（Jetpack Compose + Material 3）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DashboardScreen(mqtt: MqttManager) {
-    val connected by mqtt.connected.collectAsState()
-    val data by mqtt.latestData.collectAsState()
-    val alerts by mqtt.alerts.collectAsState()
+fun DashboardScreen() {
+    val connected by DataRepository.connected.collectAsState()
+    val data by DataRepository.latestData.collectAsState()
+    val alerts by DataRepository.alerts.collectAsState()
 
     // 本地变量副本：委托属性无法 smart-cast，用 val 拷贝后 Kotlin 可以安全推断非空
     val helmet = data

@@ -12,11 +12,26 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import com.helmet.monitor.data.SensorFileStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
+/**
+ * 前台服务 — 独占 MQTT 连接，熄屏后持续运行
+ *
+ * 职责：
+ * - 维持唯一 MQTT 连接（不再与 Activity 分用两条连接）
+ * - 数据写入 DataRepository（UI 层读取）
+ * - 数据写入本地 JSONL 文件（趋势图表来源）
+ * - 告警通知 + 系统闹铃剧响
+ */
 class MonitorService : Service() {
 
     private lateinit var mqtt: MqttManager
     private var mediaPlayer: MediaPlayer? = null
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
@@ -24,8 +39,31 @@ class MonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        mqtt = MqttManager(this, "_svc").apply {
-            connect { alert -> showNotification(alert); playAlarm() }
+        mqtt = MqttManager(this).apply {
+            // 连接状态 → DataRepository
+            scope.launch { connected.collect { DataRepository.setConnected(it) } }
+
+            // 数据回调 → DataRepository + 本地文件
+            onDataReceived { data ->
+                DataRepository.updateData(data)
+                val now = System.currentTimeMillis() / 1000
+                scope.launch {
+                    SensorFileStore.appendSensor(applicationContext, SensorFileStore.SensorRecord(
+                        timestamp = now, temperature = data.temperature,
+                        heartRate = data.heartRate, velocity = data.velocity))
+                    if (data.longitude != null && data.latitude != null) {
+                        SensorFileStore.appendGps(applicationContext, SensorFileStore.GpsPoint(
+                            timestamp = now, longitude = data.longitude, latitude = data.latitude))
+                    }
+                }
+            }
+
+            // 告警回调 → DataRepository + 通知 + 闹铃
+            connect { alert ->
+                DataRepository.addAlerts(listOf(alert))
+                showNotification(alert)
+                playAlarm()
+            }
         }
         return START_STICKY
     }
@@ -83,7 +121,6 @@ class MonitorService : Service() {
 
     private fun playAlarm() {
         try {
-            // 音量拉到最大
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
             am.setStreamVolume(AudioManager.STREAM_ALARM, am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0)
 
@@ -95,11 +132,10 @@ class MonitorService : Service() {
                     .setUsage(AudioAttributes.USAGE_ALARM)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build())
-                isLooping = true  // 循环播放直到用户操作
+                isLooping = true
                 prepare()
                 start()
             }
-            // 10 秒后自动停
             android.os.Handler(mainLooper).postDelayed({ stopAlarm() }, 10000)
         } catch (e: Exception) {
             android.util.Log.e("MonitorService", "Alarm error: ${e.message}")
