@@ -8,7 +8,7 @@ UART 下位机模拟器 —— PC 端测试脚本
   g           → GPS 请求（模组→从机），从机应答 g<lat>,<lng>
   b<cmd_id>   → 按键事件（从机→模组），cmd_id: 1=关机 2=对话 3=音量- 4=音量+
   t<text>     → 导航文字（模组→从机），从机显示在屏幕上
-  s<temp>,<hr>,<vel> → 传感器数据（从机→模组），温度(°C),心率(BPM),速度(m/s)
+  s<temp>,<hr>,<pressure> → 传感器数据（从机→模组），温度(°C),心率(BPM),气压(Pa)
 
 启动方式：
   python uart_slave_simulator.py COM3          # Windows
@@ -32,6 +32,7 @@ Author: test tools
 import sys
 import time
 import random
+import math
 import threading
 import signal
 
@@ -130,6 +131,11 @@ class UartSlaveSimulator:
         self.sensor_thread = None
         self.sensor_stop_event = threading.Event()
 
+        # 六轴 IMU 模拟（默认关闭，定时上报加速度/角速度）
+        self.auto_imu_enabled = False
+        self.imu_thread = None
+        self.imu_stop_event = threading.Event()
+
         # 统计
         self.rx_count = 0
         self.tx_count = 0
@@ -155,6 +161,7 @@ class UartSlaveSimulator:
     def disconnect(self):
         """关闭串口"""
         self.stop_auto_sensor()
+        self.stop_auto_imu()
         if self.ser and self.ser.is_open:
             self.ser.close()
             print(f"{Color.YELLOW}串口 {self.port} 已关闭{Color.RESET}")
@@ -175,16 +182,16 @@ class UartSlaveSimulator:
     # ---------- 传感器模拟 ----------
     @staticmethod
     def _gen_sensor_data():
-        """随机生成传感器数据，返回 (temperature, heart_rate, velocity)"""
+        """随机生成传感器数据，返回 (temperature, heart_rate, pressure)"""
         temp = round(random.uniform(36.1, 36.9), 1)       # 体温 36.1~36.9 °C
         hr = random.randint(65, 95)                        # 心率 65~95 BPM
-        vel = round(random.uniform(0.5, 12.0), 1)          # 骑行速度 0.5~12.0 m/s
-        return temp, hr, vel
+        pressure = random.randint(100800, 101600)          # 气压 ~101325 Pa（成都平原）
+        return temp, hr, pressure
 
     def send_sensor(self):
         """手动发送一次传感器数据（随机值）"""
-        temp, hr, vel = self._gen_sensor_data()
-        self._send_sensor_raw(temp, hr, vel)
+        temp, hr, pressure = self._gen_sensor_data()
+        self._send_sensor_raw(temp, hr, pressure)
 
     def send_alert(self, alert_type=0):
         """发送告警传感器数据
@@ -201,22 +208,90 @@ class UartSlaveSimulator:
         else:
             temp, hr = round(random.uniform(38.5, 41.0), 1), random.randint(160, 200)
             tag = "双重告警"
-        vel = round(random.uniform(0.5, 12.0), 1)
-        self._send_sensor_raw(temp, hr, vel)
-        print(f"  {Color.RED}[ALERT {tag}] → s{temp},{hr},{vel}{Color.RESET}")
+        pressure = random.randint(100800, 101600)
+        self._send_sensor_raw(temp, hr, pressure)
+        print(f"  {Color.RED}[ALERT {tag}] → s{temp},{hr},{pressure}{Color.RESET}")
 
-    def _send_sensor_raw(self, temp, hr, vel):
-        data = f"s{temp},{hr},{vel}".encode('utf-8')
+    def _send_sensor_raw(self, temp, hr, pressure):
+        data = f"s{temp},{hr},{pressure}".encode('utf-8')
         self._send_raw(data)
 
     def _sensor_auto_worker(self):
         """后台线程：每隔 5 秒上报一次随机传感器数据"""
         while not self.sensor_stop_event.is_set():
-            temp, hr, vel = self._gen_sensor_data()
-            data = f"s{temp},{hr},{vel}".encode('utf-8')
+            temp, hr, pressure = self._gen_sensor_data()
+            data = f"s{temp},{hr},{pressure}".encode('utf-8')
             self._send_raw(data)
-            print(f"  {Color.CYAN}[SENSOR] → s{temp},{hr},{vel}{Color.RESET}")
+            print(f"  {Color.CYAN}[SENSOR] → s{temp},{hr},{pressure}{Color.RESET}")
             self.sensor_stop_event.wait(timeout=5.0)
+
+    # ---------- 六轴 IMU 模拟 ----------
+    @staticmethod
+    def _gen_imu_data():
+        """模拟生成六轴 IMU 数据，返回 (ax, ay, az, gx, gy, gz)
+
+        静止平放状态：az ≈ 1g（重力），其余 ≈ 0
+        骑行运动：小幅随机抖动 + 前进方向加速度
+        """
+        # 加速度：在静止基准上叠加小幅噪声和运动分量
+        ax = round(random.gauss(0.05, 0.15), 3)       # X 轴（前后），骑行时有正向偏置
+        ay = round(random.gauss(0.00, 0.10), 3)       # Y 轴（左右）
+        az = round(random.gauss(1.00, 0.08), 3)       # Z 轴（上下），含 ~1g 重力
+
+        # 角速度：小幅随机漂移（头盔佩戴者头部微动）
+        gx = round(random.gauss(0.0, 5.0), 3)         # 俯仰角速度
+        gy = round(random.gauss(0.0, 5.0), 3)         # 翻滚角速度
+        gz = round(random.gauss(0.0, 8.0), 3)         # 偏航角速度（转弯时较大）
+
+        return ax, ay, az, gx, gy, gz
+
+    def send_imu(self):
+        """手动发送一次六轴 IMU 数据"""
+        ax, ay, az, gx, gy, gz = self._gen_imu_data()
+        self._send_imu_raw(ax, ay, az, gx, gy, gz)
+
+    def send_imu_impact(self):
+        """手动发送碰撞模拟数据（大加速度 + 大角速度）"""
+        ax = round(random.gauss(0, 2.0), 3)
+        ay = round(random.gauss(0, 2.0), 3)
+        az = round(random.gauss(-5.0, 3.0), 3)         # 大冲击
+        gx = round(random.gauss(0, 200.0), 3)
+        gy = round(random.gauss(0, 200.0), 3)
+        gz = round(random.gauss(0, 400.0), 3)           # 旋转分量大
+        self._send_imu_raw(ax, ay, az, gx, gy, gz)
+
+    def _send_imu_raw(self, ax, ay, az, gx, gy, gz):
+        data = f"m{ax},{ay},{az},{gx},{gy},{gz}".encode('utf-8')
+        self._send_raw(data)
+
+    def _imu_auto_worker(self):
+        """后台线程：每隔 100ms 上报一次六轴 IMU 数据（10Hz）"""
+        while not self.imu_stop_event.is_set():
+            ax, ay, az, gx, gy, gz = self._gen_imu_data()
+            data = f"m{ax},{ay},{az},{gx},{gy},{gz}".encode('utf-8')
+            self._send_raw(data)
+            print(f"  {Color.CYAN}[IMU] → m{ax},{ay},{az},{gx},{gy},{gz}{Color.RESET}")
+            self.imu_stop_event.wait(timeout=0.1)  # 100ms = 10Hz
+
+    def start_auto_imu(self):
+        """开始自动上报六轴 IMU 数据（10Hz）"""
+        if self.auto_imu_enabled:
+            return
+        self.auto_imu_enabled = True
+        self.imu_stop_event.clear()
+        self.imu_thread = threading.Thread(target=self._imu_auto_worker, daemon=True)
+        self.imu_thread.start()
+        print(f"{Color.GREEN}[IMU] 自动上报已启动 (10Hz, 模拟骑行状态){Color.RESET}")
+
+    def stop_auto_imu(self):
+        """停止自动上报六轴 IMU 数据"""
+        if not self.auto_imu_enabled:
+            return
+        self.auto_imu_enabled = False
+        self.imu_stop_event.set()
+        if self.imu_thread:
+            self.imu_thread.join(timeout=3.0)
+        print(f"{Color.YELLOW}[IMU] 自动上报已停止{Color.RESET}")
 
     def start_auto_sensor(self):
         """开始自动上报传感器数据"""
@@ -361,8 +436,11 @@ def print_banner(sim: UartSlaveSimulator):
   1 / 2 / 3 / 4   发送按键事件 (关机/对话/音量-/音量+)
   g               手动发送一次当前 GPS 坐标（不受请求-应答约束）
   l <lat>,<lng>   设置当前位置
-  m               手动发送一次传感器数据 (温度/心率/速度, 随机值)
+  m               手动发送一次传感器数据 (温度/心率/气压, 随机值)
   d               开始/停止 自动传感器上报 (每 5 秒)
+  i               手动发送一次六轴 IMU 数据
+  I               手动发送碰撞模拟 IMU 数据
+  o               开始/停止 自动六轴 IMU 上报 (10Hz)
   s               显示统计信息
   q / Ctrl+C      退出
 
@@ -379,6 +457,7 @@ def print_stats(sim: UartSlaveSimulator):
   当前位置:    {sim.current_lat:.6f}, {sim.current_lng:.6f}
   GPS 轨迹:    仅在收到上位机 g 请求时应答 (路径点 {sim.route_index + 1}/{len(sim.route)})
   传感器上报:  {sensor_status}
+  IMU 上报:    {"运行中 (10Hz, 模拟骑行状态)" if sim.auto_imu_enabled else "已停止"}
   接收帧数:    {sim.rx_count}
   发送帧数:    {sim.tx_count}
 """)
@@ -386,7 +465,8 @@ def print_stats(sim: UartSlaveSimulator):
 
 def handle_keyboard(sim: UartSlaveSimulator, line: str) -> bool:
     """处理键盘输入，返回 False 表示退出"""
-    line = line.strip().lower()
+    raw = line.strip()
+    line = raw.lower()
 
     if not line:
         print_banner(sim)
@@ -420,6 +500,21 @@ def handle_keyboard(sim: UartSlaveSimulator, line: str) -> bool:
             sim.stop_auto_sensor()
         else:
             sim.start_auto_sensor()
+        return True
+
+    if line == 'i':
+        sim.send_imu()
+        return True
+
+    if raw == 'I':                 # 大写 I = 碰撞模拟（不经过 lower()）
+        sim.send_imu_impact()
+        return True
+
+    if line == 'o':
+        if sim.auto_imu_enabled:
+            sim.stop_auto_imu()
+        else:
+            sim.start_auto_imu()
         return True
 
     if line.startswith('l'):

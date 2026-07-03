@@ -30,7 +30,7 @@ Topic 约定:
 """
 
 from umqtt import MQTTClient
-from usr.threading import Lock
+from usr.threading import Thread, Event, Lock
 from usr.logging import getLogger
 
 logger = getLogger(__name__)
@@ -84,6 +84,10 @@ class MqttClient(object):
         self._lock = Lock()            # 保护 _client
         self._downlink_callback = None  # 下行指令回调: fn(topic, msg)
 
+        # MQTT 保活线程（周期调用 check_msg 发送 PINGREQ + 接收下行消息）
+        self._keepalive_thread = None
+        self._keepalive_stop = Event()
+
         # ---------- 属性管理 ----------
         self._attributes = {}          # 已注册的属性元信息
         self._attr_values = {}         # 当前属性值
@@ -130,7 +134,8 @@ class MqttClient(object):
                     except Exception as e:
                         logger.warn("Subscribe failed: {}".format(e))
 
-                    # QuecPython umqtt 库内置自动保活，无需手动 check_msg
+                    # 启动保活线程（周期 check_msg 发送 PINGREQ + 接收下行）
+                    self._start_keepalive()
 
                     return 0
                 else:
@@ -142,6 +147,7 @@ class MqttClient(object):
 
     def disconnect(self):
         """断开 MQTT 连接并释放资源"""
+        self._stop_keepalive()
         with self._lock:
             if self._client is not None:
                 try:
@@ -209,7 +215,7 @@ class MqttClient(object):
         """
         if data_dict is None:
             if not self._attr_values:
-                logger.warn("MQTT no attributes to publish")
+                logger.debug("MQTT no attributes to publish")
                 return -1
             data_dict = self._attr_values
 
@@ -286,6 +292,37 @@ class MqttClient(object):
     def __on_error(self, error_info):
         """MQTT 内部线程异常回调"""
         logger.error("MQTT internal error: {}".format(error_info))
+
+    # ---------- 保活线程 ----------
+
+    def _keepalive_worker(self):
+        """后台线程：周期调用 check_msg 维持 MQTT 保活（PINGREQ）+ 接收下行消息"""
+        interval = max(self._keepalive // 2, 5)  # 保活间隔的一半，最少 5 秒
+        logger.info("MQTT keepalive thread started, interval={}s".format(interval))
+        while not self._keepalive_stop.is_set():
+            try:
+                if self._client is not None and self.is_connected:
+                    self._client.check_msg()
+            except Exception as e:
+                logger.error("MQTT check_msg error: {}".format(e))
+            self._keepalive_stop.wait(timeout=interval)
+        logger.info("MQTT keepalive thread stopped")
+
+    def _start_keepalive(self):
+        """启动保活线程"""
+        if self._keepalive_thread is not None:
+            return
+        self._keepalive_stop.clear()
+        self._keepalive_thread = Thread(target=self._keepalive_worker)
+        self._keepalive_thread.start(stack_size=64)
+
+    def _stop_keepalive(self):
+        """停止保活线程"""
+        if self._keepalive_thread is None:
+            return
+        self._keepalive_stop.set()
+        self._keepalive_thread.join()
+        self._keepalive_thread = None
 
     # ---------- 内部方法 ----------
 

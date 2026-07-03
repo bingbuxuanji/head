@@ -38,6 +38,12 @@ class JsonMessage(object):
     def __getitem__(self, key):
         return self.kwargs[key]
 
+    def get(self, key, default=None):
+        return self.kwargs.get(key, default)
+
+    def keys(self):
+        return self.kwargs.keys()
+
 
 class RespHelper(Condition):
 
@@ -378,39 +384,31 @@ class WebSocketClient(object):
                 {
                     "name": "self.setvolume_down()",
                     "description": "只通过调用setvolume_down方法来控制音量变小,接收到回应后会播报当前音量大小",
-                    "inputSchema": {}
+                    "inputSchema": {"type": "object", "properties": {}, "required": []}
                 },
                 {
                     "name": "self.setvolume_up()",
                     "description": "只通过调用setvolume_up方法来控制音量变大,接收到回应后会播报当前音量大小",
-                    "inputSchema": {}
+                    "inputSchema": {"type": "object", "properties": {}, "required": []}
                 },
                 {
                     "name": "self.setvolume_close()",
                     "description": "只通过调用setvolume_close方法来静音,接收到回应后会播报当前音量大小",
-                    "inputSchema": {}
+                    "inputSchema": {"type": "object", "properties": {}, "required": []}
                 },
-                {
-                    "name": "self.setvolume()",
-                    "description": "设置音量大小,接收到回应后会播报当前音量大小,volume范围是0-11",
-                    "inputSchema": {
-                        "volume": {
-                            "type": "int",
-                            "minimum": 0,
-                            "maximum": 11
-                        }
-                    },
-                    "required": ["volume"]
-                },               
                 {
                     "name": "self.new_name()",
                     "description": "当需要改唤醒词时就调用该new_name方法来设置新的唤醒词,接收到回应后会播报当前唤醒词,输入的参数名是name且内容只能是拼音，每个拼音之间用'_'连接起来，例如我说唤醒词改成'小智小智'则传入参数为'_xiao_zhi_xiao_zhi'，不可以传入汉字",
-                    "parameters": {
-                    "name": {
-                        "type": "text",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "新的唤醒词拼音，例如 _xiao_zhi_xiao_zhi"
+                            }
+                        },
+                        "required": ["name"]
                     }
-                },
-                    "required": ["name"]
                 },
                 {
                     "name": "get_bicycle_route",
@@ -503,17 +501,6 @@ class WebSocketClient(object):
                     "result": {
                         "content": [
                             { "type": "text", "text": "已静音" }
-                        ],
-                        "isError": False
-                    }
-                }
-            elif tool_name == "self.setvolume()":
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [
-                            { "type": "text", "text": "音量已设置为{}".format(args)}
                         ],
                         "isError": False
                     }

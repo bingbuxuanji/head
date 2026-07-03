@@ -93,12 +93,12 @@ fun ChartScreen() {
                 )
             }
         } else {
-            // 体温折线图
+            // 温度折线图
             ChartCard(
-                title = "🌡 体温趋势",
+                title = "🌡 温度趋势",
                 color = Color(0xFFE53935),
                 yLabel = "°C",
-                yRange = 35.0f..42.0f,
+                yRange = -10.0f..50.0f,
                 data = sensorData.mapNotNull { r ->
                     r.temperature?.toFloat()?.let { r.timestamp to it }
                 },
@@ -117,14 +117,14 @@ fun ChartScreen() {
                 tappedPoint = tappedPoint
             )
 
-            // 速度折线图
+            // 气压折线图
             ChartCard(
-                title = "🚴 速度趋势",
+                title = "🌪 气压趋势",
                 color = Color(0xFF1976D2),
-                yLabel = "m/s",
-                yRange = 0f..20f,
+                yLabel = "Pa",
+                yRange = 80000f..110000f,
                 data = sensorData.mapNotNull { r ->
-                    r.velocity?.toFloat()?.let { r.timestamp to it }
+                    r.pressure?.toFloat()?.let { r.timestamp to it }
                 },
                 tappedPoint = tappedPoint
             )

@@ -370,6 +370,7 @@ class Massage(object):
         self.uart = UART(no, bate, data_bits, parity, stop_bits, flow_control)
         self.uart.set_callback(self.callback)
         self.message_handler = None   # 外部注册的处理器，签名为 handler(msg_type, data)
+        self._tick_cb = None          # UART 数据接收心跳回调
 
         # ---------- TX 队列：消除多线程写 UART 的竞争 ----------
         self.__tx_queue = Queue(max_size=64)
@@ -392,16 +393,40 @@ class Massage(object):
         """独立 TX 线程：串行化所有写请求，避免多线程竞争 UART 硬件"""
         while True:
             msg = self.__tx_queue.get()
-            self.uart.write(msg)
+            try:
+                # 统一转为 bytes，兼容外部传入的 str/bytes
+                if isinstance(msg, str):
+                    msg = msg.encode('utf-8')
+                self.uart.write(msg)
+            except Exception as e:
+                print("TX thread error: {}".format(e))
+
+    def set_tick_callback(self, cb):
+        """注册心跳回调：每次收到 UART 数据时调用，用于保持时间发送等"""
+        self._tick_cb = cb
 
     def uartRead(self, length):
         msg = self.uart.read(length)
         if not msg or len(msg) < 1:
             return
-        msg_type = chr(msg[0])          # 第一个字节：'b', 'g', ...
-        data = msg[1:]                  # 剩余字节
-        if self.message_handler:
-            self.message_handler(msg_type, data)
+        # 心跳回调：每次收到数据都触发，不受线程阻塞影响
+        if self._tick_cb:
+            try:
+                self._tick_cb()
+            except Exception:
+                pass
+        # 按行切分，处理缓冲区中可能粘包的多条消息
+        # 从机 printf 以 \r\n 结尾，统一替换为 \n 后拆分
+        msg = msg.replace(b'\r\n', b'\n')
+        lines = msg.split(b'\n')
+        for raw in lines:
+            raw = raw.strip()
+            if not raw or len(raw) < 2:
+                continue
+            msg_type = chr(raw[0])          # 第一个字节：'b', 'g', 's', 'm', 't'...
+            data = raw[1:]                  # 剩余字节
+            if self.message_handler:
+                self.message_handler(msg_type, data)
 
 class CommandDispatcher(object):
     def __init__(self):
@@ -425,7 +450,7 @@ class CommandDispatcher(object):
     def dispatch(self, msg_type, data):
         """分发消息，data 为 bytes 类型（已去掉第一个字节的消息类型标识）"""
         if msg_type not in self._handlers:
-            logger.warn("Unknown message type: {}".format(msg_type))
+            logger.debug("Unknown message type: {}".format(msg_type))
             return
 
         handlers = self._handlers[msg_type]

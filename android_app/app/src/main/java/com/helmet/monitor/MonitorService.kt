@@ -56,7 +56,9 @@ class MonitorService : Service() {
                 scope.launch {
                     SensorFileStore.appendSensor(applicationContext, SensorFileStore.SensorRecord(
                         timestamp = now, temperature = data.temperature,
-                        heartRate = data.heartRate, velocity = data.velocity))
+                        heartRate = data.heartRate, pressure = data.pressure,
+                        ax = data.ax, ay = data.ay, az = data.az,
+                        gx = data.gx, gy = data.gy, gz = data.gz))
                     if (data.longitude != null && data.latitude != null) {
                         SensorFileStore.appendGps(applicationContext, SensorFileStore.GpsPoint(
                             timestamp = now, longitude = data.longitude, latitude = data.latitude))

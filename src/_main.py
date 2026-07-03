@@ -157,6 +157,7 @@ class Application(object):
         self._svr_tts_stop_time = 0
         self._gps_lock = _thread.allocate_lock()
         self._replanning = False
+        self._last_replan_time = 0         # 上次重规划时间戳，用于冷却
 
         # ThingsCloud MQTT 云平台客户端 → 自建 MQTT 服务器
         self.mqtt = None
@@ -170,6 +171,15 @@ class Application(object):
 
         # 传感器数据由从机主动推送（事件上报），无需主机轮询
         # 见 readme.md §9.7 传感器模块 — 交互模式: 事件上报
+
+        # G431 传感器初始化握手
+        self._sensor_init_received = False  # 是否收到 i<hex> 报文
+        self._sensor_status_code = 0        # 传感器就绪位掩码
+        self._collection_started = False    # 是否已发送启动指令
+
+        # 心情显示
+        self._current_mood = ""             # LLM 传来的心情，如 ":)"">:("
+        self._last_time_sent = 0            # 上次发送时间戳，用于后备通路限频
 
         self.nav_manager.on_step_changed = self._on_nav_step_changed
         self.nav_manager.on_off_course = self._on_nav_off_course
@@ -196,7 +206,7 @@ class Application(object):
                 logger.warn("GPS coords out of range: a={}, b={}".format(a, b))
                 return
 
-            logger.info("GPS parsed: latitude={}, longitude={}".format(latitude, longitude))
+            logger.debug("GPS parsed: lat={}, lng={}".format(latitude, longitude))
 
             self._gps_lock.acquire()
             self.current_lat = latitude
@@ -241,8 +251,8 @@ class Application(object):
     def _sensor_handler(self, data):
         """处理从机上报的传感器数据（s 报文）
 
-        协议格式: s<temperature>,<heart_rate>,<velocity>
-        示例:   s36.5,75,12.3
+        协议格式: s<temperature>,<heart_rate>,<pressure>
+        示例:   s36.5,75,101325
         占位:   s-1,-1,-1 表示该传感器无数据
 
         由 CommandDispatcher 在收到 UART 's' 消息时回调。
@@ -256,26 +266,111 @@ class Application(object):
 
             temp = float(parts[0])
             hr = float(parts[1])
-            vel = float(parts[2])
+            pressure = float(parts[2])
 
             updates = {}
             if temp >= 0:
                 updates["temperature"] = round(temp, 1)
             if hr >= 0:
                 updates["heart_rate"] = round(hr, 1)
-            if vel >= 0:
-                updates["velocity"] = round(vel, 2)
+            if pressure >= 0:
+                updates["pressure"] = int(pressure)
 
             if updates:
-                logger.info("Sensor data: {}".format(updates))
                 sys_bus.publish("SENSOR_DATA", updates)
-
-                # MQTT 属性上报（从机主动推送时即时上传）
                 if self.mqtt and self.mqtt.is_connected:
                     self.mqtt.set_attributes(updates)
                     self.mqtt.publish_attributes()
         except Exception as e:
             logger.error("Sensor parse error: {}".format(e))
+
+    # ---------- 六轴 IMU 数据处理 ----------
+    def _imu_handler(self, data):
+        """处理从机上报的六轴 IMU 数据（m 报文）
+
+        协议格式: m<ax>,<ay>,<az>,<gx>,<gy>,<gz>
+        示例:   m0.12,-9.81,0.05,0.01,0.00,-0.02
+        占位:   m-999,-999,-999,-999,-999,-999 表示传感器无数据
+
+        由 CommandDispatcher 在收到 UART 'm' 消息时回调。
+        """
+        try:
+            raw = data.decode('utf-8').strip()
+            parts = raw.split(',')
+            if len(parts) != 6:
+                logger.warn("IMU data format error, expected 6 values: {}".format(raw))
+                return
+
+            ax = float(parts[0])
+            ay = float(parts[1])
+            az = float(parts[2])
+            gx = float(parts[3])
+            gy = float(parts[4])
+            gz = float(parts[5])
+
+            NO_DATA = -999.0
+            updates = {}
+            if ax != NO_DATA:
+                updates["ax"] = round(ax, 3)
+            if ay != NO_DATA:
+                updates["ay"] = round(ay, 3)
+            if az != NO_DATA:
+                updates["az"] = round(az, 3)
+            if gx != NO_DATA:
+                updates["gx"] = round(gx, 3)
+            if gy != NO_DATA:
+                updates["gy"] = round(gy, 3)
+            if gz != NO_DATA:
+                updates["gz"] = round(gz, 3)
+
+            if updates:
+                sys_bus.publish("IMU_DATA", updates)
+                if self.mqtt and self.mqtt.is_connected:
+                    self.mqtt.set_attributes(updates)
+                    self.mqtt.publish_attributes()
+        except Exception as e:
+            logger.error("IMU parse error: {}".format(e))
+
+    # ---------- 传感器初始化状态处理 ----------
+    def _on_init_status(self, data):
+        """处理 G431 上报的传感器初始化状态（i 报文）
+
+        协议格式: i<hex>
+        示例:   iF 表示全部就绪，i7 表示缺 MAX30102
+
+        G431 开机后会周期性发送此报文（每 2 秒），直到收到 EC800 的 'i' 回应。
+        """
+        try:
+            raw = data.decode('utf-8').strip()
+            if raw:
+                self._sensor_status_code = int(raw, 16)
+            else:
+                self._sensor_status_code = 0
+        except Exception:
+            self._sensor_status_code = 0
+
+        # 首次收到时打印一次，之后就绪后发一次 i（不重复）
+        if not self._sensor_init_received:
+            self._sensor_init_received = True
+            logger.info("传感器初始化状态: 0x{:X} (BH1750:{}, BMP280:{}, MPU6050:{}, MAX30102:{})".format(
+                self._sensor_status_code,
+                "OK" if self._sensor_status_code & 1 else "FAIL",
+                "OK" if self._sensor_status_code & 2 else "FAIL",
+                "OK" if self._sensor_status_code & 4 else "FAIL",
+                "OK" if self._sensor_status_code & 8 else "FAIL",
+            ))
+
+        # EC800 已就绪则回复 i（G431 可能复位过，每次都要回）
+        if self.mqtt and self.mqtt.is_connected:
+            if not self._collection_started:
+                self._collection_started = True
+                logger.info("已发送采集启动指令到 G431")
+            self._send_start_collection()   # 每次 iB 都回 i，确保 G431 收到
+
+    def _send_start_collection(self):
+        """通知 G431 开始传感器数据采集（不发日志，由调用方控制）"""
+        if self.uart:
+            self.uart.uartWrite(b'i\r\n')
 
     def _request_gps_position(self, timeout_ms=3000):
         """主动通过串口请求GPS位置，等待返回新数据"""
@@ -291,7 +386,7 @@ class Application(object):
         self._gps_request_time = utime.ticks_ms()
         self._gps_lock.release()
 
-        self.uart.uartWrite('g')
+        self.uart.uartWrite(b'g\r\n')
         start = utime.ticks_ms()
         while utime.ticks_diff(utime.ticks_ms(), start) < timeout_ms:
             self._gps_lock.acquire()
@@ -353,7 +448,7 @@ class Application(object):
         服务端 TTS 活跃时跳过本地播报，避免冲突；串口下发不受影响。
         """
         if self.uart:
-            self.uart.uartWrite(b't' + inject_text.encode('utf-8'))
+            self.uart.uartWrite(b't' + inject_text.encode('utf-8') + b'\r\n')
         if not self._svr_tts_active:
             self.audio_manager.tts_play(inject_text)
             logger.info("导航语音已播报: {}".format(inject_text[:40]))
@@ -376,10 +471,15 @@ class Application(object):
                 self.mqtt.publish_attributes()
 
     def _on_nav_off_course(self):
-        logger.info("导航偏航警告，触发重新规划")
+        logger.info("导航偏航警告")
+        now = utime.ticks_ms()
+        # 冷却期 45 秒，避免频繁 HTTP 重规划阻塞系统
+        if utime.ticks_diff(now, self._last_replan_time) < 45000:
+            self._notify_nav_text('偏离路线，请手动回到路线')
+            return
         self._notify_nav_text('您已偏离导航路线，正在重新规划')
-        # 后台基于当前位置重新请求高德路线并覆盖导航
         if not self._replanning:
+            self._last_replan_time = now
             Thread(target=self._replan_route_worker).start(stack_size=64)
 
     def _on_nav_arrived(self):
@@ -394,28 +494,37 @@ class Application(object):
         try:
             lat, lng = self._request_gps_position(timeout_ms=3000)
             if lat is None or lng is None:
+                self._notify_nav_text('重规划失败：GPS未就绪')
                 return
             origin = "{},{}".format(lng, lat)
             dest = self.nav_manager.route.destination
+            if not dest:
+                self._notify_nav_text('重规划失败：目的地丢失')
+                return
 
             route_data = self.amap.get_bicycle_route(origin, dest)
             if not route_data or route_data.get('errcode') != 0:
                 logger.warn("偏航重规划：路线请求失败")
+                self._notify_nav_text('重规划失败：网络异常，请手动导航')
                 return
 
             full_route = AmapAPI.parse_bicycle_route(route_data)
             if not full_route:
                 logger.warn("偏航重规划：路线解析失败")
+                self._notify_nav_text('重规划失败：路线解析错误')
                 return
 
+            # 用户可能已手动停止导航，检查后再启动
+            if not self.nav_manager.is_navigating:
+                return
             self.nav_manager.start(full_route, current_lng=lng, current_lat=lat)
-            # 发送新路线第一步（后续步骤由 on_step_changed 回调驱动）
             first_step = full_route.steps[0] if full_route.steps else None
             if first_step:
                 self._on_nav_step_changed(first_step, 0, len(full_route.steps))
             logger.info("偏航重规划完成，共 {} 个路段".format(len(full_route.steps)))
         except Exception as e:
             logger.error("偏航重规划异常: {}".format(e))
+            self._notify_nav_text('重规划失败：系统异常')
         finally:
             self._replanning = False
 
@@ -494,6 +603,21 @@ class Application(object):
         else:
             logger.warn("Dispatcher not initialized")
 
+    def _tick_send_time(self):
+        """后备时间发送：每次收到 G431 数据时调用，确保长耗时任务时时间不中断"""
+        now = utime.ticks_ms()
+        if utime.ticks_diff(now, self._last_time_sent) >= 1000:
+            self._last_time_sent = now
+            try:
+                tm = utime.localtime()
+                time_str = "{:02d}:{:02d}:{:02d}".format(tm[3], tm[4], tm[5])
+                mood = self._current_mood
+                if mood:
+                    time_str += ' ' + mood
+                self.uart.uartWrite(b't' + time_str.encode('utf-8') + b'\r\n')
+            except Exception:
+                pass
+
     def __record_thread_handler(self):
         """纯粹是为了kws&vad能识别才起的线程持续读音频"""
         logger.debug("record thread handler enter")
@@ -513,28 +637,57 @@ class Application(object):
         传感器数据（温度/心率/速度）由从机主动推送（事件上报），无需此线程轮询。
         """
         logger.debug("GPS 后台线程 enter")
+        _mqtt_tick = 0
+        _time_tick = 0
         while not self.__tc_gps_stop_event.is_set():
-            if self.uart:
-                now = utime.ticks_ms()
-                should_send = False
-                self._gps_lock.acquire()
-                pending = self._gps_request_pending
-                # 超时保护：超过 2 秒未收到回复则强制清除，防止死锁
-                if pending and utime.ticks_diff(now, self._gps_request_time) >= 2000:
-                    self._gps_request_pending = False
-                    pending = False
-                if not pending:
-                    # 根据导航状态动态切换轮询间隔
-                    interval = self._nav_gps_interval if self.nav_manager.is_navigating else self._tc_gps_interval
-                    if utime.ticks_diff(now, self._last_bg_gps_request) >= interval:
-                        self._gps_request_pending = True
-                        self._gps_request_time = now
-                        self._last_bg_gps_request = now
-                        should_send = True
-                self._gps_lock.release()
-                if should_send:
-                    self.uart.uartWrite('g')
-            utime.sleep_ms(100)
+            try:
+                if self.uart:
+                    now = utime.ticks_ms()
+                    should_send = False
+                    self._gps_lock.acquire()
+                    pending = self._gps_request_pending
+                    if pending and utime.ticks_diff(now, self._gps_request_time) >= 2000:
+                        self._gps_request_pending = False
+                        pending = False
+                    if not pending:
+                        interval = self._nav_gps_interval if self.nav_manager.is_navigating else self._tc_gps_interval
+                        if utime.ticks_diff(now, self._last_bg_gps_request) >= interval:
+                            self._gps_request_pending = True
+                            self._gps_request_time = now
+                            self._last_bg_gps_request = now
+                            should_send = True
+                    self._gps_lock.release()
+                    if should_send:
+                        self.uart.uartWrite(b'g\r\n')
+
+                # 每 5 秒刷新 MQTT 属性缓存
+                _mqtt_tick += 1
+                if _mqtt_tick >= 50:
+                    _mqtt_tick = 0
+                    if self.mqtt and self.mqtt.is_connected:
+                        try:
+                            self.mqtt.publish_attributes()
+                        except Exception:
+                            pass
+
+                # 每秒发送当前时间到 G431 OLED
+                _time_tick += 1
+                if _time_tick >= 10 and self.uart:
+                    _time_tick = 0
+                    try:
+                        tm = utime.localtime()
+                        time_str = "{:02d}:{:02d}:{:02d}".format(tm[3], tm[4], tm[5])
+                        mood = self._current_mood
+                        if mood:
+                            time_str += ' ' + mood
+                        self.uart.uartWrite(b't' + time_str.encode('utf-8') + b'\r\n')
+                    except Exception as e:
+                        logger.error("Time send error: {}".format(e))
+
+                utime.sleep_ms(100)
+            except Exception as e:
+                logger.error("GPS thread error: {}".format(e))
+                utime.sleep_ms(100)
         logger.debug("GPS 后台线程 exit")
 
     def _start_tc_gps_thread(self):
@@ -684,11 +837,17 @@ class Application(object):
         self.audio_manager.opus_write(raw)
 
     def on_json_message(self, msg):
-        return getattr(self, "handle_{}_message".format(msg["type"]))(msg)
+        handler_name = "handle_{}_message".format(msg["type"])
+        handler = getattr(self, handler_name, None)
+        if handler is None:
+            logger.warn("Unknown message type: {}".format(msg["type"]))
+            return
+        return handler(msg)
 
-    def handle_stt_message(data, msg):
-        # pass
-        raise NotImplementedError("handle_stt_message not implemented")
+    def handle_stt_message(self, msg):
+        """语音识别结果: {"type":"stt","text":"..."}"""
+        text = msg.kwargs.get("text", "")
+        logger.info("STT: {}".format(text[:100] if text else "(empty)"))
 
     def handle_tts_message(self, msg):
         state = msg["state"]
@@ -701,9 +860,20 @@ class Application(object):
             self._svr_tts_stop_time = utime.ticks_ms()
 
 #"happy" "cool"  "angry"  "think"
-# ... existing code ...
-    def handle_llm_message(data, msg):
-        raise NotImplementedError("handle_llm_message not implemented")
+    _EMOTION_MAP = {
+        "happy":  ":)",  "sad":    ":(",
+        "angry":  ">:",  "cool":   "B)",
+        "think":  "~?",  "surprised": ":O",
+        "neutral": "|",  "laugh":  ":D",
+    }
+
+    def handle_llm_message(self, msg):
+        """大模型文本回复: {"type":"llm","text":"...","emotion":"happy"}"""
+        text = msg.kwargs.get("text", "")
+        emotion = msg.kwargs.get("emotion", "")
+        if emotion:
+            self._current_mood = self._EMOTION_MAP.get(emotion, "")
+        logger.info("LLM: [{}] {}".format(emotion, text[:100] if text else "(empty)"))
     
     def handle_mcp_message(self, msg):
         print("msg: ", msg)
@@ -728,9 +898,6 @@ class Application(object):
                 print("当前音量大小", self.audio_manager.setvolume_up())
             elif handle == "self.setvolume_close()":
                 print("当前音量大小", self.audio_manager.setvolume_close())
-            elif handle == "self.setvolume()":
-                arguments = data_dict['payload']["params"]["arguments"]["volume"]
-                print("当前音量大小", arguments, self.audio_manager.setvolume(arguments))
             elif handle == "self.new_name()":
                 arguments = data_dict['payload']["params"]["arguments"]["name"]
                 print("name:", self.audio_manager.new_name(arguments))
@@ -844,13 +1011,17 @@ class Application(object):
             self.__protocol.mcp_tools_call(tool_name=handle, req_id=id)
             # raise NotImplementedError("handle_mcp_message not implemented")
         
-    def handle_iot_message(data, msg):
-        pass
-        # raise NotImplementedError("handle_iot_message not implemented")
-    
-    def handle_error_message(data, msg):
-        pass
-        # raise NotImplementedError("handle_error_message not implemented")
+    def handle_iot_message(self, msg):
+        """物联网设备状态: {"type":"iot","descriptors":[...],"states":[...]}"""
+        logger.debug("IOT message: {}".format(list(msg.kwargs.keys())))
+
+    def handle_error_message(self, msg):
+        """服务端错误消息"""
+        logger.error("Server error: {}".format(msg.kwargs.get("message", str(msg))))
+
+    def handle_alert_message(self, msg):
+        """服务端告警消息"""
+        logger.warn("Server alert: {}".format(msg.kwargs.get("message", str(msg))))
 
     def run(self):
         global enable_flag
@@ -870,11 +1041,18 @@ class Application(object):
         # 注册 GPS 默认处理器
         self.dispatcher.register('g', self._gps_default_handler)
 
-        # 注册传感器数据处理器（s 报文: 温度,心率,速度）
+        # 注册传感器数据处理器（s 报文: 温度,心率,气压）
         self.dispatcher.register('s', self._sensor_handler)
+
+        # 注册六轴 IMU 数据处理器（m 报文: ax,ay,az,gx,gy,gz）
+        self.dispatcher.register('m', self._imu_handler)
+
+        # 注册传感器初始化状态处理器（i 报文: 位掩码 hex）
+        self.dispatcher.register('i', self._on_init_status)
 
         self.uart = Massage()
         self.uart.set_message_handler(self._on_uart_message)
+        self.uart.set_tick_callback(self._tick_send_time)   # 后备时间通路
 
         # ---------- 自建 MQTT 服务器连接 ----------
         # frp 内网穿透公网端点
@@ -897,11 +1075,24 @@ class Application(object):
             self.mqtt.register_attribute("heart_rate", unit="BPM", min_val=0, max_val=300, precision=1)
             self.mqtt.register_attribute("longitude", unit="°", min_val=-180, max_val=180, precision=0.000001)
             self.mqtt.register_attribute("latitude", unit="°", min_val=-90, max_val=90, precision=0.000001)
-            self.mqtt.register_attribute("velocity", unit="m/s", min_val=0, max_val=100, precision=0.01)
+            self.mqtt.register_attribute("pressure", unit="Pa", min_val=30000, max_val=110000, precision=1)
+            # 六轴 IMU 属性
+            self.mqtt.register_attribute("ax", unit="g", min_val=-16, max_val=16, precision=0.001)
+            self.mqtt.register_attribute("ay", unit="g", min_val=-16, max_val=16, precision=0.001)
+            self.mqtt.register_attribute("az", unit="g", min_val=-16, max_val=16, precision=0.001)
+            self.mqtt.register_attribute("gx", unit="°/s", min_val=-2000, max_val=2000, precision=0.001)
+            self.mqtt.register_attribute("gy", unit="°/s", min_val=-2000, max_val=2000, precision=0.001)
+            self.mqtt.register_attribute("gz", unit="°/s", min_val=-2000, max_val=2000, precision=0.001)
 
             if self.mqtt.connect() == 0:
                 logger.info("MQTT 服务器已连接: {}:{}".format(MQTT_SERVER_HOST, MQTT_SERVER_PORT))
                 self.mqtt.publish_event("device_online", {"version": "1.0.0", "mode": "helmet"})
+                # 如果已收到 G431 传感器状态，通知其开始采集
+                if self._sensor_init_received:
+                    if not self._collection_started:
+                        self._collection_started = True
+                        logger.info("已发送采集启动指令到 G431")
+                    self._send_start_collection()
             else:
                 logger.warn("MQTT 服务器连接失败，跳过云平台上报")
         except Exception as e:

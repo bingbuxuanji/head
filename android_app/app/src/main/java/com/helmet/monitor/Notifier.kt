@@ -59,9 +59,9 @@ class Notifier(private val context: Context) {
         )
 
         val title = when (alert.field) {
-            "temperature" -> "🌡 体温异常"
+            "temperature" -> "🌡 温度异常"
             "heart_rate"  -> "❤ 心率异常"
-            "velocity"    -> "🏃 速度异常"
+            "pressure"    -> "🌪 气压异常"
             else          -> "⚠ ${alert.field} 告警"
         }
 

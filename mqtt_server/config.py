@@ -19,9 +19,14 @@ DATA_LOG_ENABLED = True
 DATA_LOG_DIR = os.environ.get("MQTT_DATA_LOG_DIR", "./data_logs")
 
 ALERT_THRESHOLDS = {
-    "temperature": {"min": 35.0, "max": 37.5},
+    "temperature": {"min": -10.0, "max": 45.0},  # 环境温度，非体温
     "heart_rate":  {"min": 40,   "max": 150},
-    "velocity":    {"max": 20.0},
+    "pressure":   {"min": 30000, "max": 110000},
+    # 六轴 IMU 阈值（碰撞/摔倒检测参考）
+    # 合加速度 |a| = sqrt(ax²+ay²+az²)
+    "accel_magnitude": {"max": 3.0},       # g, >3g 持续 50ms → 可能碰撞
+    # 合角速度 |ω| = sqrt(gx²+gy²+gz²)
+    "gyro_magnitude":  {"max": 300.0},     # °/s, >300 → 可能摔倒
 }
 
 DATA_PIPELINE = [

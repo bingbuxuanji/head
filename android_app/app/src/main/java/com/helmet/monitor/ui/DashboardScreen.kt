@@ -111,11 +111,11 @@ fun DashboardScreen() {
                 ) {
                     DataCard(
                         modifier = Modifier.weight(1f),
-                        label = "体温",
+                        label = "温度",
                         value = data?.temperature?.let { "${"%.1f".format(it)}°C" } ?: "--",
                         icon = Icons.Default.Thermostat,
                         valueColor = helmet?.temperature?.let {
-                            if (it > 37.5) Color(0xFFE53935) else Color(0xFF43A047)
+                            if (it > 40) Color(0xFFE53935) else Color(0xFF43A047)
                         } ?: Color.Gray
                     )
                     DataCard(
@@ -141,10 +141,12 @@ fun DashboardScreen() {
                 ) {
                     DataCard(
                         modifier = Modifier.weight(1f),
-                        label = "速度",
-                        value = data?.velocity?.let { "${"%.1f".format(it)} m/s" } ?: "--",
+                        label = "气压",
+                        value = data?.pressure?.let { "$it Pa" } ?: "--",
                         icon = Icons.Default.Speed,
-                        valueColor = MaterialTheme.colorScheme.primary
+                        valueColor = data?.pressure?.let {
+                            if (it < 50000 || it > 105000) Color(0xFFE53935) else Color(0xFF43A047)
+                        } ?: Color.Gray
                     )
                     DataCard(
                         modifier = Modifier.weight(1f),
@@ -157,6 +159,87 @@ fun DashboardScreen() {
                         icon = Icons.Default.LocationOn,
                         valueColor = MaterialTheme.colorScheme.primary,
                         smallText = true
+                    )
+                }
+            }
+
+            // ---- 六轴 IMU ----
+            item {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "六轴 IMU",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DataCard(
+                        modifier = Modifier.weight(1f),
+                        label = "加速度 X",
+                        value = data?.ax?.let { "${"%.2f".format(it)}g" } ?: "--",
+                        icon = Icons.Default.TrendingUp,
+                        valueColor = data?.ax?.let {
+                            if (kotlin.math.abs(it) > 3f) Color(0xFFE53935) else Color(0xFF43A047)
+                        } ?: Color.Gray
+                    )
+                    DataCard(
+                        modifier = Modifier.weight(1f),
+                        label = "加速度 Y",
+                        value = data?.ay?.let { "${"%.2f".format(it)}g" } ?: "--",
+                        icon = Icons.Default.TrendingUp,
+                        valueColor = data?.ay?.let {
+                            if (kotlin.math.abs(it) > 3f) Color(0xFFE53935) else Color(0xFF43A047)
+                        } ?: Color.Gray
+                    )
+                    DataCard(
+                        modifier = Modifier.weight(1f),
+                        label = "加速度 Z",
+                        value = data?.az?.let { "${"%.2f".format(it)}g" } ?: "--",
+                        icon = Icons.Default.TrendingUp,
+                        valueColor = data?.az?.let {
+                            if (kotlin.math.abs(it) > 3f) Color(0xFFE53935) else Color(0xFF43A047)
+                        } ?: Color.Gray
+                    )
+                }
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DataCard(
+                        modifier = Modifier.weight(1f),
+                        label = "角速度 X",
+                        value = data?.gx?.let { "${"%.1f".format(it)}°/s" } ?: "--",
+                        icon = Icons.Default.Rotate90DegreesCcw,
+                        valueColor = data?.gx?.let {
+                            if (kotlin.math.abs(it) > 300f) Color(0xFFE53935) else Color(0xFF7B1FA2)
+                        } ?: Color.Gray
+                    )
+                    DataCard(
+                        modifier = Modifier.weight(1f),
+                        label = "角速度 Y",
+                        value = data?.gy?.let { "${"%.1f".format(it)}°/s" } ?: "--",
+                        icon = Icons.Default.Rotate90DegreesCcw,
+                        valueColor = data?.gy?.let {
+                            if (kotlin.math.abs(it) > 300f) Color(0xFFE53935) else Color(0xFF7B1FA2)
+                        } ?: Color.Gray
+                    )
+                    DataCard(
+                        modifier = Modifier.weight(1f),
+                        label = "角速度 Z",
+                        value = data?.gz?.let { "${"%.1f".format(it)}°/s" } ?: "--",
+                        icon = Icons.Default.Rotate90DegreesCcw,
+                        valueColor = data?.gz?.let {
+                            if (kotlin.math.abs(it) > 300f) Color(0xFFE53935) else Color(0xFF7B1FA2)
+                        } ?: Color.Gray
                     )
                 }
             }
@@ -275,6 +358,8 @@ fun AlertCard(alert: AlertItem) {
     val icon: ImageVector = when (alert.field) {
         "temperature" -> Icons.Default.Thermostat
         "heart_rate"  -> Icons.Default.Favorite
+        "accel_magnitude" -> Icons.Default.TrendingUp
+        "gyro_magnitude"  -> Icons.Default.Rotate90DegreesCcw
         else          -> Icons.Default.Warning
     }
 
@@ -301,9 +386,11 @@ fun AlertCard(alert: AlertItem) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = when (alert.field) {
-                        "temperature" -> "体温异常"
+                        "temperature" -> "温度异常"
                         "heart_rate"  -> "心率异常"
-                        "velocity"    -> "速度异常"
+                        "pressure"    -> "气压异常"
+                        "accel_magnitude" -> "碰撞检测"
+                        "gyro_magnitude"  -> "摔倒检测"
                         else          -> alert.field
                     },
                     fontWeight = FontWeight.Bold,

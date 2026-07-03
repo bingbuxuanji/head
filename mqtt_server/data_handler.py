@@ -208,21 +208,40 @@ class DataPipeline(object):
             except (ValueError, TypeError):
                 pass
 
-        # 速度校验
-        if "velocity" in data:
+        # 气压校验
+        if "pressure" in data:
             try:
-                v = float(data["velocity"])
-                if 0 <= v <= 100:
-                    validated["velocity"] = round(v, 2)
+                p = int(data["pressure"])
+                if 30000 <= p <= 110000:
+                    validated["pressure"] = p
                 else:
                     ctx["alerts"].append({
                         "type": "invalid_value",
-                        "field": "velocity",
-                        "value": v,
-                        "msg": "速度超出范围: {}".format(v),
+                        "field": "pressure",
+                        "value": p,
+                        "msg": "气压超出范围: {} Pa".format(p),
                     })
             except (ValueError, TypeError):
                 pass
+
+        # 六轴 IMU 校验
+        for axis in ("ax", "ay", "az"):
+            if axis in data:
+                try:
+                    v = float(data[axis])
+                    if -16 <= v <= 16:
+                        validated[axis] = round(v, 3)
+                except (ValueError, TypeError):
+                    pass
+
+        for axis in ("gx", "gy", "gz"):
+            if axis in data:
+                try:
+                    v = float(data[axis])
+                    if -2000 <= v <= 2000:
+                        validated[axis] = round(v, 3)
+                except (ValueError, TypeError):
+                    pass
 
         ctx["processed_data"] = validated
 
@@ -231,10 +250,43 @@ class DataPipeline(object):
         阈值告警处理器
 
         根据 config.ALERT_THRESHOLDS 检测异常值，
-        生成告警。
+        生成告警。六轴数据计算矢量幅值后再比较。
         """
+        import math
+
         data = ctx.get("processed_data", {})
         thresholds = config.ALERT_THRESHOLDS
+
+        # 六轴 IMU 幅值检测（碰撞/摔倒）
+        has_ax = "ax" in data
+        has_ay = "ay" in data
+        has_az = "az" in data
+        if has_ax and has_ay and has_az:
+            accel_mag = math.sqrt(data["ax"]**2 + data["ay"]**2 + data["az"]**2)
+            limit = thresholds.get("accel_magnitude", {}).get("max")
+            if limit and accel_mag > limit:
+                ctx["alerts"].append({
+                    "type": "threshold_high",
+                    "field": "accel_magnitude",
+                    "value": round(accel_mag, 3),
+                    "threshold": limit,
+                    "msg": "合加速度过大: {:.2f}g > {:.1f}g (可能碰撞)".format(accel_mag, limit),
+                })
+
+        has_gx = "gx" in data
+        has_gy = "gy" in data
+        has_gz = "gz" in data
+        if has_gx and has_gy and has_gz:
+            gyro_mag = math.sqrt(data["gx"]**2 + data["gy"]**2 + data["gz"]**2)
+            limit = thresholds.get("gyro_magnitude", {}).get("max")
+            if limit and gyro_mag > limit:
+                ctx["alerts"].append({
+                    "type": "threshold_high",
+                    "field": "gyro_magnitude",
+                    "value": round(gyro_mag, 1),
+                    "threshold": limit,
+                    "msg": "合角速度过大: {:.1f}°/s > {:.0f}°/s (可能摔倒)".format(gyro_mag, limit),
+                })
 
         for field, value in data.items():
             if field not in thresholds:
@@ -297,14 +349,21 @@ class DataPipeline(object):
             )
         if "temperature" in data:
             t = data["temperature"]
-            color = "\033[31m" if t > 37.5 else "\033[32m"
+            color = "\033[31m" if t > 40 else "\033[32m"  # 环境温度 > 40°C 红色告警
             parts.append(f"TEMP:{color}{t:.1f}C\033[0m")
         if "heart_rate" in data:
             hr = int(data["heart_rate"])
             color = "\033[31m" if hr > 150 else "\033[33m" if hr > 100 else "\033[32m"
             parts.append(f"HR:{color}{hr}bpm\033[0m")
-        if "velocity" in data:
-            parts.append(f"SPD:{data['velocity']:.1f}m/s")
+        if "pressure" in data:
+            p = data["pressure"]
+            color = "\033[31m" if p < 50000 or p > 105000 else "\033[32m"
+            parts.append(f"PRS:{color}{p}Pa\033[0m")
+        if all(k in data for k in ("ax","ay","az")):
+            parts.append(f"ACC:({data['ax']:.2f},{data['ay']:.2f},{data['az']:.2f})g")
+        if all(k in data for k in ("gx","gy","gz")):
+            gyro_color = "\033[31m" if any(abs(data[k]) > 300 for k in ("gx","gy","gz")) else "\033[32m"
+            parts.append(f"GYR:{gyro_color}({data['gx']:.1f},{data['gy']:.1f},{data['gz']:.1f})°/s\033[0m")
 
         line = " | ".join(parts)
         print(line, flush=True)

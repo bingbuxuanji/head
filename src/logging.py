@@ -45,8 +45,8 @@ def getNameLevel(name):
 class BasicConfig(object):
     logger_register_table = {}
     basic_configure = {
-        "level": Level.WARN,
-        "debug": True,
+        "level": Level.INFO,     # INFO 及以上显示（WARN/ERROR/CRITICAL）
+        "debug": False,          # 关闭 debug 刷屏
         "stream": sys.stdout
     }
 

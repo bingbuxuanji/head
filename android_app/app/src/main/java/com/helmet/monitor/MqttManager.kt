@@ -143,9 +143,15 @@ class MqttManager(context: Context, clientSuffix: String = "") {
         val merged = HelmetData(
             temperature = obj.get("temperature")?.asDouble ?: prev?.temperature,
             heartRate = obj.get("heart_rate")?.asDouble?.toInt() ?: prev?.heartRate,
-            velocity = obj.get("velocity")?.asDouble ?: prev?.velocity,
+            pressure = obj.get("pressure")?.asInt ?: prev?.pressure,
             longitude = obj.get("longitude")?.asDouble ?: prev?.longitude,
             latitude = obj.get("latitude")?.asDouble ?: prev?.latitude,
+            ax = obj.get("ax")?.asFloat ?: prev?.ax,
+            ay = obj.get("ay")?.asFloat ?: prev?.ay,
+            az = obj.get("az")?.asFloat ?: prev?.az,
+            gx = obj.get("gx")?.asFloat ?: prev?.gx,
+            gy = obj.get("gy")?.asFloat ?: prev?.gy,
+            gz = obj.get("gz")?.asFloat ?: prev?.gz,
         )
         _latestData.value = merged
         prefs.edit().putString("data", gson.toJson(merged)).apply()
@@ -178,9 +184,16 @@ class MqttManager(context: Context, clientSuffix: String = "") {
 data class HelmetData(
     val temperature: Double?,
     val heartRate: Int?,
-    val velocity: Double?,
+    val pressure: Int?,
     val longitude: Double?,
     val latitude: Double?,
+    // 六轴 IMU
+    val ax: Float?,
+    val ay: Float?,
+    val az: Float?,
+    val gx: Float?,
+    val gy: Float?,
+    val gz: Float?,
 )
 
 data class AlertItem(

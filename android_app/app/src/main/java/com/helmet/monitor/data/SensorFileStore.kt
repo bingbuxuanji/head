@@ -13,7 +13,7 @@ import java.util.*
  * 本地 JSONL 文件存储 — 传感器数据 + GPS 轨迹
  *
  * 文件结构:
- *   filesDir/sensor/{yyyyMMdd}.jsonl  — 每行: {ts, temperature, heart_rate, velocity}
+ *   filesDir/sensor/{yyyyMMdd}.jsonl  — 每行: {ts, temperature, heart_rate, pressure}
  *   filesDir/gps/{yyyyMMdd}.jsonl      — 每行: {ts, longitude, latitude}
  *
  * 用作趋势图表和轨迹回放的数据源，不依赖服务端存储。
@@ -29,7 +29,14 @@ object SensorFileStore {
         @SerializedName("ts") val timestamp: Long,
         val temperature: Double?,
         @SerializedName("heart_rate") val heartRate: Int?,
-        val velocity: Double?,
+        val pressure: Int?,
+        // 六轴 IMU
+        val ax: Float?,
+        val ay: Float?,
+        val az: Float?,
+        val gx: Float?,
+        val gy: Float?,
+        val gz: Float?,
     )
 
     data class GpsPoint(
